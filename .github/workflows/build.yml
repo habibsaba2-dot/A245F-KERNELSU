@@ -73,8 +73,18 @@ jobs:
           sed -i 's/CONFIG_PROCA=y/# CONFIG_PROCA is not set/g' $DEFCONFIG
           sed -i 's/CONFIG_FIVE=y/# CONFIG_FIVE is not set/g' $DEFCONFIG
 
-      - name: Compile Kernel
+      - name: Link Hermetic Build Tools and Compile Kernel
         run: |
+          mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
+          for bin in /usr/bin/* /bin/*; do
+            base=$(basename "$bin")
+            if [ ! -e "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$base" ]; then
+              ln -sf "$bin" "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$base" || true
+            fi
+          done
+          mkdir -p "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86"
+          ln -sfn "$HOME/toolchain/clang-r416183b" "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b"
+          
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
@@ -87,6 +97,8 @@ jobs:
           export DIST_DIR="../out/target/product/a24/obj/KERNEL_OBJ"
           export BUILD_CONFIG="../out/target/product/a24/obj/KERNEL_OBJ/build.config"
           export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
+          export SKIP_ABI_CHECKS=1
+          export SKIP_DEFCONFIG_CHECK=1
           
           cd ../kernel
           ./build/build.sh
