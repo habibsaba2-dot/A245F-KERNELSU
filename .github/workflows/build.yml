@@ -1,0 +1,107 @@
+name: Build A245F KernelSU SusFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python-is-python3 python3 zip unzip cpio lz4 wget
+
+      - name: Setup AOSP Clang & Magiskboot
+        run: |
+          mkdir -p $HOME/toolchain/clang-r416183b
+          cd $HOME/toolchain/clang-r416183b
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
+          tar -xzf clang-r416183b.tar.gz && rm clang-r416183b.tar.gz
+          
+          mkdir -p $HOME/tools && cd $HOME/tools
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk -O magisk.zip
+          unzip -p magisk.zip lib/x86_64/libmagiskboot.so > magiskboot
+          chmod +x magiskboot
+
+      - name: Download and Merge Kernel Source Parts
+        run: |
+          mkdir -p $HOME/work && cd $HOME/work
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.001
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.002
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.003
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.004
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.005
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/boot.img.lz4
+          cat Kernel.tar.tar.* > Kernel.tar.tar
+          tar -xf Kernel.tar.tar
+          tar -xzf Kernel.tar.gz
+          lz4 -d boot.img.lz4 boot.img
+
+      - name: Integrate KernelSU-Next and SusFS
+        run: |
+          cd $HOME/work/Kernel/kernel-5.10
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          
+          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git $HOME/susfs4ksu
+          cp -r $HOME/susfs4ksu/kernel_patches/fs/* fs/
+          cp -r $HOME/susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 < $HOME/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
+
+      - name: Configure Defconfig and Disable Samsung Protections
+        run: |
+          DEFCONFIG="$HOME/work/Kernel/kernel-5.10/arch/arm64/configs/a24_00_defconfig"
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEFCONFIG
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEFCONFIG
+          
+          sed -i 's/CONFIG_SECURITY_DEFEX=y/# CONFIG_SECURITY_DEFEX is not set/g' $DEFCONFIG
+          sed -i 's/CONFIG_PROCA=y/# CONFIG_PROCA is not set/g' $DEFCONFIG
+          sed -i 's/CONFIG_FIVE=y/# CONFIG_FIVE is not set/g' $DEFCONFIG
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
+          cd $HOME/work/Kernel/kernel-5.10
+          python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          
+          export ARCH=arm64
+          export PLATFORM_VERSION=13
+          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export CROSS_COMPILE_COMPAT="arm-linux-gnueabi-"
+          export OUT_DIR="../out/target/product/a24/obj/KERNEL_OBJ"
+          export DIST_DIR="../out/target/product/a24/obj/KERNEL_OBJ"
+          export BUILD_CONFIG="../out/target/product/a24/obj/KERNEL_OBJ/build.config"
+          export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
+          
+          cd ../kernel
+          ./build/build.sh
+
+      - name: Repack boot.img and Create Odin Tar
+        run: |
+          mkdir -p $HOME/output && cd $HOME/output
+          cp $HOME/work/boot.img .
+          $HOME/tools/magiskboot unpack boot.img
+          
+          KERNEL_IMG=$(find $HOME/work/Kernel/out -name "Image.gz" -o -name "Image" | head -n 1)
+          cp "$KERNEL_IMG" kernel
+          $HOME/tools/magiskboot repack boot.img new-boot.img
+          mv new-boot.img boot.img
+          tar -cvf A245F_KSU_SusFS_boot.tar boot.img
+
+      - name: Upload Ready Odin Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: A245F-KSU-SusFS-Odin
+          path: $HOME/output/A245F_KSU_SusFS_boot.tar
