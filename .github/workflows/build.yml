@@ -10,7 +10,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev
+          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev m4
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Setup AOSP Clang & Magiskboot
@@ -19,6 +19,16 @@ jobs:
           cd $HOME/toolchain/clang-r416183b
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
           tar -xzf clang-r416183b.tar.gz && rm clang-r416183b.tar.gz
+          
+          cat << 'EOF' > $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg
+          -B/usr/lib/x86_64-linux-gnu
+          -B/usr/lib/gcc/x86_64-linux-gnu/10
+          -L/usr/lib/x86_64-linux-gnu
+          -L/usr/lib/gcc/x86_64-linux-gnu/10
+          -isystem /usr/include
+          -isystem /usr/include/x86_64-linux-gnu
+          EOF
+          cp $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg $HOME/toolchain/clang-r416183b/bin/x86_64-linux-gnu.cfg
           
           mkdir -p $HOME/tools && cd $HOME/tools
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk -O magisk.zip
@@ -76,11 +86,13 @@ jobs:
       - name: Link Hermetic Build Tools and Compile Kernel
         run: |
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
+          mkdir -p "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin"
+          mkdir -p "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin"
           for bin in /usr/bin/* /bin/*; do
             base=$(basename "$bin")
-            if [ ! -e "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$base" ]; then
-              ln -sf "$bin" "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$base" || true
-            fi
+            ln -sf "$bin" "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$base" || true
+            ln -sf "$bin" "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/$base" || true
+            ln -sf "$bin" "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/$base" || true
           done
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86"
           ln -sfn "$HOME/toolchain/clang-r416183b" "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b"
@@ -92,6 +104,8 @@ jobs:
           
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
           export CPATH="/usr/include:/usr/include/x86_64-linux-gnu"
+          export BISON_PKGDATADIR="/usr/share/bison"
+          export M4="/usr/bin/m4"
           
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
