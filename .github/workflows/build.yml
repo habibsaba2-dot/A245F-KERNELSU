@@ -37,10 +37,12 @@ jobs:
           tar -xf Kernel.tar.tar
           tar -xzf Kernel.tar.gz
           lz4 -d boot.img.lz4 boot.img
+          KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
+          echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
       - name: Integrate KernelSU-Next and SusFS
         run: |
-          cd $HOME/work/Kernel/kernel-5.10
+          cd "$KERNEL_ROOT/kernel-5.10"
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
           git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git $HOME/susfs4ksu
@@ -50,7 +52,7 @@ jobs:
 
       - name: Configure Defconfig and Disable Samsung Protections
         run: |
-          DEFCONFIG="$HOME/work/Kernel/kernel-5.10/arch/arm64/configs/a24_00_defconfig"
+          DEFCONFIG="$KERNEL_ROOT/kernel-5.10/arch/arm64/configs/a24_00_defconfig"
           echo "CONFIG_KSU=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
@@ -73,7 +75,7 @@ jobs:
       - name: Compile Kernel
         run: |
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
-          cd $HOME/work/Kernel/kernel-5.10
+          cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           
           export ARCH=arm64
@@ -94,7 +96,7 @@ jobs:
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
           
-          KERNEL_IMG=$(find $HOME/work/Kernel/out -name "Image.gz" -o -name "Image" | head -n 1)
+          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" -o -name "Image" | head -n 1)
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
