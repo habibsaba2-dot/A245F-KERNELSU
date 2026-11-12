@@ -10,7 +10,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget
+          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Setup AOSP Clang & Magiskboot
@@ -86,6 +86,9 @@ jobs:
           ln -sfn "$HOME/toolchain/clang-r416183b" "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b"
           
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
+          export CPATH="/usr/include:/usr/include/x86_64-linux-gnu"
+          export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib/gcc/x86_64-linux-gnu/10"
+          
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           
