@@ -10,7 +10,7 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev m4
+          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev m4 device-tree-compiler gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi dwarves rsync kmod pkg-config
           sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Setup AOSP Clang & Magiskboot
@@ -85,6 +85,7 @@ jobs:
 
       - name: Link Hermetic Build Tools and Compile Kernel
         run: |
+          set -o pipefail
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin"
           mkdir -p "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin"
@@ -122,7 +123,11 @@ jobs:
           export SKIP_DEFCONFIG_CHECK=1
           
           cd ../kernel
-          ./build/build.sh
+          ./build/build.sh 2>&1 | tee /tmp/build.log || {
+            echo "=== SUMMARY OF ERRORS ==="
+            grep -iE "error:|not found|fatal:" /tmp/build.log | tail -n 30
+            exit 1
+          }
 
       - name: Repack boot.img and Create Odin Tar
         run: |
