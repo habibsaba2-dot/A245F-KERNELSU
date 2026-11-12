@@ -10,7 +10,8 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python-is-python3 python3 zip unzip cpio lz4 wget
+          sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
       - name: Setup AOSP Clang & Magiskboot
         run: |
@@ -96,7 +97,10 @@ jobs:
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
           
-          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" -o -name "Image" | head -n 1)
+          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" | head -n 1)
+          if [ -z "$KERNEL_IMG" ]; then
+            KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image" | head -n 1)
+          fi
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
