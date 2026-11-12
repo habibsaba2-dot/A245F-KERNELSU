@@ -95,6 +95,23 @@ jobs:
             ln -sf "$bin" "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/$base" || true
             ln -sf "$bin" "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/$base" || true
           done
+          
+          rm -f "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/clang"* \
+                "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/llvm"* \
+                "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/ld.lld"* \
+                "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/lld"* \
+                "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/clang"* \
+                "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/llvm"* \
+                "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/ld.lld"* \
+                "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/clang"* \
+                "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/llvm"* \
+                "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/ld.lld"*
+          
+          for tool in "$HOME/toolchain/clang-r416183b/bin/"*; do
+            tbase=$(basename "$tool")
+            ln -sfn "$tool" "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$tbase"
+          done
+          
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86"
           ln -sfn "$HOME/toolchain/clang-r416183b" "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b"
           
