@@ -20,6 +20,16 @@ jobs:
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
           tar -xzf clang-r416183b.tar.gz && rm clang-r416183b.tar.gz
           
+          cat << 'EOF' > $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg
+          -B/usr/lib/x86_64-linux-gnu
+          -B/usr/lib/gcc/x86_64-linux-gnu/10
+          -L/usr/lib/x86_64-linux-gnu
+          -L/usr/lib/gcc/x86_64-linux-gnu/10
+          -isystem /usr/include
+          -isystem /usr/include/x86_64-linux-gnu
+          EOF
+          cp $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg $HOME/toolchain/clang-r416183b/bin/x86_64-linux-gnu.cfg
+          
           mkdir -p $HOME/tools && cd $HOME/tools
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk -O magisk.zip
           unzip -p magisk.zip lib/x86_64/libmagiskboot.so > magiskboot
@@ -88,6 +98,8 @@ jobs:
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
           export CPATH="/usr/include:/usr/include/x86_64-linux-gnu"
           export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib/gcc/x86_64-linux-gnu/10"
+          export HOSTLDFLAGS="-B/usr/lib/x86_64-linux-gnu -B/usr/lib/gcc/x86_64-linux-gnu/10 -L/usr/lib/x86_64-linux-gnu -L/usr/lib/gcc/x86_64-linux-gnu/10"
+          export USERLDFLAGS="$HOSTLDFLAGS"
           
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
