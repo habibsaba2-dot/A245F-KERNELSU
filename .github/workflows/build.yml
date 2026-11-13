@@ -10,8 +10,20 @@ jobs:
       - name: Checkout Repository (Get a24_stock_config.txt)
         uses: actions/checkout@v4
 
-      - name: Install Build Dependencies
+      - name: Enable 16GB Swap and Install Build Dependencies
         run: |
+          df -h
+          if [ -d /mnt ] && [ $(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9') -ge 20 ]; then
+            SWAP_PATH="/mnt/swapfile"
+          else
+            SWAP_PATH="/swapfile"
+          fi
+          sudo fallocate -l 16G "$SWAP_PATH" || sudo dd if=/dev/zero of="$SWAP_PATH" bs=1M count=16384
+          sudo chmod 600 "$SWAP_PATH"
+          sudo mkswap "$SWAP_PATH"
+          sudo swapon "$SWAP_PATH"
+          free -h
+          
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev m4 device-tree-compiler gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi dwarves rsync kmod pkg-config
           sudo ln -sf /usr/bin/python2 /usr/bin/python
