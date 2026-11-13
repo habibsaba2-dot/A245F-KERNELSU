@@ -68,9 +68,6 @@ jobs:
           touch .scmversion
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          echo "=== KernelSU-Next Kconfig ==="
-          cat drivers/kernelsu/Kconfig || true
-          
           git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git $HOME/susfs4ksu
           cp -r $HOME/susfs4ksu/kernel_patches/fs/* fs/
           cp -r $HOME/susfs4ksu/kernel_patches/include/linux/* include/linux/
@@ -120,139 +117,153 @@ jobs:
               ):
                   os.remove(ns_rej)
 
-          # 2. Check available hook symbols in KernelSU-Next
+          # 2. Check actual hook function definitions in KernelSU-Next
           ksu_src = ""
           for p in glob.glob("drivers/kernelsu/**/*.[ch]", recursive=True):
               with open(p, "r", errors="ignore") as f:
                   ksu_src += f.read() + "\n"
 
+          def has_func_def(name):
+              return bool(re.search(rf'\b(?:int|void|long)\s+{name}\s*\(', ksu_src))
+
+          has_exec_def = has_func_def("ksu_handle_execveat")
+          has_exec_sucompat_def = has_func_def("ksu_handle_execveat_sucompat")
+          has_faccessat_def = has_func_def("ksu_handle_faccessat")
+          has_vfs_read_def = has_func_def("ksu_handle_vfs_read")
+          has_stat_def = has_func_def("ksu_handle_stat")
+          has_input_def = has_func_def("ksu_handle_input_handle_event")
+
           has_exec_hook_var = "ksu_execveat_hook" in ksu_src
-          has_exec_sucompat = "ksu_handle_execveat_sucompat" in ksu_src
           has_vfs_read_var = "ksu_vfs_read_hook" in ksu_src
           has_input_var = "ksu_input_hook" in ksu_src
-          print(f"KSU symbols: exec_var={has_exec_hook_var}, sucompat={has_exec_sucompat}, read_var={has_vfs_read_var}, input_var={has_input_var}")
+          print(f"KSU hook defs: exec={has_exec_def}, sucompat={has_exec_sucompat_def}, faccessat={has_faccessat_def}, vfs_read={has_vfs_read_def}, stat={has_stat_def}, input={has_input_def}")
 
-          # 3. Inject Manual Hooks into fs/exec.c, fs/open.c, fs/read_write.c, fs/stat.c, drivers/input/input.c
+          # 3. Inject only defined Manual Hooks
           # Hook 1: fs/exec.c
-          with open("fs/exec.c", "r") as f:
-              txt = f.read()
-          if "ksu_handle_execveat" not in txt:
-              decl = (
-                  "#ifdef CONFIG_KSU\n"
-                  + ("extern bool ksu_execveat_hook __read_mostly;\n" if has_exec_hook_var else "")
-                  + "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n"
-                  + ("extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n" if has_exec_sucompat else "")
-                  + "#endif\n"
-              )
-              if has_exec_hook_var and has_exec_sucompat:
-                  call = (
+          if has_exec_def:
+              with open("fs/exec.c", "r") as f:
+                  txt = f.read()
+              if "ksu_handle_execveat" not in txt:
+                  decl = (
                       "#ifdef CONFIG_KSU\n"
-                      "\tif (unlikely(ksu_execveat_hook))\n"
-                      "\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
-                      "\telse\n"
-                      "\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n"
-                      "#endif\n"
+                      + ("extern bool ksu_execveat_hook __read_mostly;\n" if has_exec_hook_var else "")
+                      + "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n"
+                      + ("extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n" if has_exec_sucompat_def else "")
+                      + "#endif\n"
                   )
-              else:
-                  call = (
-                      "#ifdef CONFIG_KSU\n"
-                      "\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
-                      "#endif\n"
-                  )
-              txt, n1 = re.subn(r'(static int do_execveat_common\s*\()', decl + r'\1', txt, count=1)
-              txt, n2 = re.subn(r'(if\s*\(\s*IS_ERR\(\s*filename\s*\)\s*\)\s*return\s+PTR_ERR\(\s*filename\s*\)\s*;)', r'\1\n' + call, txt, count=1)
-              assert n1 == 1 and n2 == 1, f"Failed patching fs/exec.c ({n1}, {n2})"
-              with open("fs/exec.c", "w") as f:
-                  f.write(txt)
-              print("Patched fs/exec.c")
+                  if has_exec_hook_var and has_exec_sucompat_def:
+                      call = (
+                          "#ifdef CONFIG_KSU\n"
+                          "\tif (unlikely(ksu_execveat_hook))\n"
+                          "\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
+                          "\telse\n"
+                          "\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n"
+                          "#endif\n"
+                      )
+                  else:
+                      call = (
+                          "#ifdef CONFIG_KSU\n"
+                          "\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
+                          "#endif\n"
+                      )
+                  txt, n1 = re.subn(r'(static int do_execveat_common\s*\()', decl + r'\1', txt, count=1)
+                  txt, n2 = re.subn(r'(if\s*\(\s*IS_ERR\(\s*filename\s*\)\s*\)\s*return\s+PTR_ERR\(\s*filename\s*\)\s*;)', r'\1\n' + call, txt, count=1)
+                  assert n1 == 1 and n2 == 1, f"Failed patching fs/exec.c ({n1}, {n2})"
+                  with open("fs/exec.c", "w") as f:
+                      f.write(txt)
+                  print("Patched fs/exec.c")
 
           # Hook 2: fs/open.c
-          with open("fs/open.c", "r") as f:
-              txt = f.read()
-          if "ksu_handle_faccessat" not in txt:
-              decl = (
-                  "#ifdef CONFIG_KSU\n"
-                  "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n"
-                  "#endif\n"
-              )
-              call = (
-                  "#ifdef CONFIG_KSU\n"
-                  "\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);\n"
-                  "#endif\n"
-              )
-              txt, n1 = re.subn(r'(long do_faccessat\s*\()', decl + r'\1', txt, count=1)
-              txt, n2 = re.subn(r'(if\s*\(\s*mode\s*&\s*~S_IRWXO\s*\))', call + r'\t\1', txt, count=1)
-              assert n1 == 1 and n2 == 1, f"Failed patching fs/open.c ({n1}, {n2})"
-              with open("fs/open.c", "w") as f:
-                  f.write(txt)
-              print("Patched fs/open.c")
+          if has_faccessat_def:
+              with open("fs/open.c", "r") as f:
+                  txt = f.read()
+              if "ksu_handle_faccessat" not in txt:
+                  decl = (
+                      "#ifdef CONFIG_KSU\n"
+                      "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n"
+                      "#endif\n"
+                  )
+                  call = (
+                      "#ifdef CONFIG_KSU\n"
+                      "\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);\n"
+                      "#endif\n"
+                  )
+                  txt, n1 = re.subn(r'(long do_faccessat\s*\()', decl + r'\1', txt, count=1)
+                  txt, n2 = re.subn(r'(if\s*\(\s*mode\s*&\s*~S_IRWXO\s*\))', call + r'\t\1', txt, count=1)
+                  assert n1 == 1 and n2 == 1, f"Failed patching fs/open.c ({n1}, {n2})"
+                  with open("fs/open.c", "w") as f:
+                      f.write(txt)
+                  print("Patched fs/open.c")
 
-          # Hook 3: fs/read_write.c
-          with open("fs/read_write.c", "r") as f:
-              txt = f.read()
-          if "ksu_handle_vfs_read" not in txt:
-              decl = (
-                  "#ifdef CONFIG_KSU\n"
-                  + ("extern bool ksu_vfs_read_hook __read_mostly;\n" if has_vfs_read_var else "")
-                  + "extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n"
-                  + "#endif\n"
-              )
-              call = (
-                  "#ifdef CONFIG_KSU\n"
-                  + ("\tif (unlikely(ksu_vfs_read_hook))\n\t\t" if has_vfs_read_var else "\t")
-                  + "ksu_handle_vfs_read(&file, &buf, &count, &pos);\n"
-                  + "#endif\n"
-              )
-              txt, n1 = re.subn(r'(ssize_t vfs_read\s*\()', decl + r'\1', txt, count=1)
-              txt, n2 = re.subn(r'(if\s*\(\s*!\s*\(\s*file->f_mode\s*&\s*FMODE_READ\s*\)\s*\))', call + r'\t\1', txt, count=1)
-              assert n1 == 1 and n2 == 1, f"Failed patching fs/read_write.c ({n1}, {n2})"
-              with open("fs/read_write.c", "w") as f:
-                  f.write(txt)
-              print("Patched fs/read_write.c")
+          # Hook 3: fs/read_write.c (skipped if ksu_handle_vfs_read is not defined)
+          if has_vfs_read_def:
+              with open("fs/read_write.c", "r") as f:
+                  txt = f.read()
+              if "ksu_handle_vfs_read" not in txt:
+                  decl = (
+                      "#ifdef CONFIG_KSU\n"
+                      + ("extern bool ksu_vfs_read_hook __read_mostly;\n" if has_vfs_read_var else "")
+                      + "extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n"
+                      + "#endif\n"
+                  )
+                  call = (
+                      "#ifdef CONFIG_KSU\n"
+                      + ("\tif (unlikely(ksu_vfs_read_hook))\n\t\t" if has_vfs_read_var else "\t")
+                      + "ksu_handle_vfs_read(&file, &buf, &count, &pos);\n"
+                      + "#endif\n"
+                  )
+                  txt, n1 = re.subn(r'(ssize_t vfs_read\s*\()', decl + r'\1', txt, count=1)
+                  txt, n2 = re.subn(r'(if\s*\(\s*!\s*\(\s*file->f_mode\s*&\s*FMODE_READ\s*\)\s*\))', call + r'\t\1', txt, count=1)
+                  assert n1 == 1 and n2 == 1, f"Failed patching fs/read_write.c ({n1}, {n2})"
+                  with open("fs/read_write.c", "w") as f:
+                      f.write(txt)
+                  print("Patched fs/read_write.c")
 
           # Hook 4: fs/stat.c
-          with open("fs/stat.c", "r") as f:
-              txt = f.read()
-          if "ksu_handle_stat" not in txt:
-              decl = (
-                  "#ifdef CONFIG_KSU\n"
-                  "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n"
-                  "#endif\n"
-              )
-              call = (
-                  "#ifdef CONFIG_KSU\n"
-                  "\tksu_handle_stat(&dfd, &filename, &flags);\n"
-                  "#endif\n"
-              )
-              txt, n1 = re.subn(r'(static int vfs_statx\s*\()', decl + r'\1', txt, count=1)
-              txt, n2 = re.subn(r'(if\s*\(\s*\(\s*flags\s*&\s*~\(\s*AT_SYMLINK_NOFOLLOW)', call + r'\t\1', txt, count=1)
-              assert n1 == 1 and n2 == 1, f"Failed patching fs/stat.c ({n1}, {n2})"
-              with open("fs/stat.c", "w") as f:
-                  f.write(txt)
-              print("Patched fs/stat.c")
+          if has_stat_def:
+              with open("fs/stat.c", "r") as f:
+                  txt = f.read()
+              if "ksu_handle_stat" not in txt:
+                  decl = (
+                      "#ifdef CONFIG_KSU\n"
+                      "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n"
+                      "#endif\n"
+                  )
+                  call = (
+                      "#ifdef CONFIG_KSU\n"
+                      "\tksu_handle_stat(&dfd, &filename, &flags);\n"
+                      "#endif\n"
+                  )
+                  txt, n1 = re.subn(r'(static int vfs_statx\s*\()', decl + r'\1', txt, count=1)
+                  txt, n2 = re.subn(r'(if\s*\(\s*\(\s*flags\s*&\s*~\(\s*AT_SYMLINK_NOFOLLOW)', call + r'\t\1', txt, count=1)
+                  assert n1 == 1 and n2 == 1, f"Failed patching fs/stat.c ({n1}, {n2})"
+                  with open("fs/stat.c", "w") as f:
+                      f.write(txt)
+                  print("Patched fs/stat.c")
 
           # Hook 5: drivers/input/input.c
-          with open("drivers/input/input.c", "r") as f:
-              txt = f.read()
-          if "ksu_handle_input_handle_event" not in txt:
-              decl = (
-                  "#ifdef CONFIG_KSU\n"
-                  + ("extern bool ksu_input_hook __read_mostly;\n" if has_input_var else "")
-                  + "extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n"
-                  + "#endif\n"
-              )
-              call = (
-                  "#ifdef CONFIG_KSU\n"
-                  + ("\tif (unlikely(ksu_input_hook))\n\t\t" if has_input_var else "\t")
-                  + "ksu_handle_input_handle_event(&type, &code, &value);\n"
-                  + "#endif\n"
-              )
-              txt, n1 = re.subn(r'(void input_event\s*\()', decl + r'\1', txt, count=1)
-              txt, n2 = re.subn(r'(if\s*\(\s*is_event_supported\(\s*type\s*,\s*dev->evbit\s*,\s*EV_MAX\s*\)\s*\)\s*\{)', r'\1\n' + call, txt, count=1)
-              assert n1 == 1 and n2 == 1, f"Failed patching drivers/input/input.c ({n1}, {n2})"
-              with open("drivers/input/input.c", "w") as f:
-                  f.write(txt)
-              print("Patched drivers/input/input.c")
+          if has_input_def:
+              with open("drivers/input/input.c", "r") as f:
+                  txt = f.read()
+              if "ksu_handle_input_handle_event" not in txt:
+                  decl = (
+                      "#ifdef CONFIG_KSU\n"
+                      + ("extern bool ksu_input_hook __read_mostly;\n" if has_input_var else "")
+                      + "extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n"
+                      + "#endif\n"
+                  )
+                  call = (
+                      "#ifdef CONFIG_KSU\n"
+                      + ("\tif (unlikely(ksu_input_hook))\n\t\t" if has_input_var else "\t")
+                      + "ksu_handle_input_handle_event(&type, &code, &value);\n"
+                      + "#endif\n"
+                  )
+                  txt, n1 = re.subn(r'(void input_event\s*\()', decl + r'\1', txt, count=1)
+                  txt, n2 = re.subn(r'(if\s*\(\s*is_event_supported\(\s*type\s*,\s*dev->evbit\s*,\s*EV_MAX\s*\)\s*\)\s*\{)', r'\1\n' + call, txt, count=1)
+                  assert n1 == 1 and n2 == 1, f"Failed patching drivers/input/input.c ({n1}, {n2})"
+                  with open("drivers/input/input.c", "w") as f:
+                      f.write(txt)
+                  print("Patched drivers/input/input.c")
 
           # 4. Patch check_version in kernel/module.c
           mod_file = "kernel/module.c"
