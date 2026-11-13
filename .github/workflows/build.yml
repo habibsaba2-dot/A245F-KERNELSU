@@ -158,6 +158,8 @@ jobs:
           
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          sed -i '/^EXT_MODULES=/d' ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          echo 'EXT_MODULES=""' >> ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           
           export ARCH=arm64
           export PLATFORM_VERSION=13
@@ -169,11 +171,12 @@ jobs:
           export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
+          export EXT_MODULES=""
           
           cd ../kernel
           ./build/build.sh 2>&1 | tee /tmp/build.log || {
             echo "=== SUMMARY OF ERRORS ==="
-            grep -iE "error:|not found|fatal:" /tmp/build.log | tail -n 30
+            grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
             exit 1
           }
 
