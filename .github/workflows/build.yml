@@ -7,6 +7,9 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
+      - name: Checkout Repository (Get a24_stock_config.txt)
+        uses: actions/checkout@v4
+
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
@@ -61,63 +64,16 @@ jobs:
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Integrate KernelSU-Next (Manual Hooks), SusFS, and Module Compatibility
+      - name: Integrate KernelSU-Next (Manual Hooks) and Module Compatibility
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
           touch .scmversion
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git $HOME/susfs4ksu
-          cp -r $HOME/susfs4ksu/kernel_patches/fs/* fs/
-          cp -r $HOME/susfs4ksu/kernel_patches/include/linux/* include/linux/
-          patch -p1 --fuzz=4 --no-backup-if-mismatch < $HOME/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
-          
           python3 - << 'EOF'
           import os, re, glob
 
-          # 1. Resolve any remaining fs/namespace.c reject
-          ns_file = "fs/namespace.c"
-          ns_rej = "fs/namespace.c.rej"
-          if os.path.exists(ns_file):
-              os.chmod(ns_file, 0o644)
-              with open(ns_file, "r") as f:
-                  content = f.read()
-
-              header_target = "unsigned int sysctl_mount_max"
-              header_inject = (
-                  "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
-                  "extern bool susfs_is_current_ksu_domain(void);\n"
-                  "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n"
-                  "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n"
-                  "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n"
-              )
-              if "CL_COPY_MNT_NS BIT(25)" not in content and header_target in content:
-                  content = content.replace(header_target, header_inject + header_target, 1)
-
-              if "copy_flags |= CL_COPY_MNT_NS;" not in content:
-                  pattern = r'(copy_flags\s*\|=\s*CL_SHARED_TO_SLAVE;)'
-                  replacement = (
-                      r'\1\n'
-                      r'#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-                      r'\tcopy_flags |= CL_COPY_MNT_NS;\n'
-                      r'#endif'
-                  )
-                  new_content, count = re.subn(pattern, replacement, content, count=1)
-                  if count > 0:
-                      content = new_content
-
-              with open(ns_file, "w") as f:
-                  f.write(content)
-
-              if (
-                  "CL_COPY_MNT_NS BIT(25)" in content
-                  and "copy_flags |= CL_COPY_MNT_NS;" in content
-                  and os.path.exists(ns_rej)
-              ):
-                  os.remove(ns_rej)
-
-          # 2. Check actual hook function definitions in KernelSU-Next
           ksu_src = ""
           for p in glob.glob("drivers/kernelsu/**/*.[ch]", recursive=True):
               with open(p, "r", errors="ignore") as f:
@@ -129,35 +85,38 @@ jobs:
           has_exec_def = has_func_def("ksu_handle_execveat")
           has_exec_sucompat_def = has_func_def("ksu_handle_execveat_sucompat")
           has_faccessat_def = has_func_def("ksu_handle_faccessat")
-          has_vfs_read_def = has_func_def("ksu_handle_vfs_read")
           has_stat_def = has_func_def("ksu_handle_stat")
           has_input_def = has_func_def("ksu_handle_input_handle_event")
 
           has_exec_hook_var = "ksu_execveat_hook" in ksu_src
-          has_vfs_read_var = "ksu_vfs_read_hook" in ksu_src
           has_input_var = "ksu_input_hook" in ksu_src
-          print(f"KSU hook defs: exec={has_exec_def}, sucompat={has_exec_sucompat_def}, faccessat={has_faccessat_def}, vfs_read={has_vfs_read_def}, stat={has_stat_def}, input={has_input_def}")
+          print(f"KSU hook defs: exec={has_exec_def}, sucompat={has_exec_sucompat_def}, faccessat={has_faccessat_def}, stat={has_stat_def}, input={has_input_def}")
 
-          # 3. Inject only defined Manual Hooks
           # Hook 1: fs/exec.c
-          if has_exec_def:
+          if has_exec_def or has_exec_sucompat_def:
               with open("fs/exec.c", "r") as f:
                   txt = f.read()
               if "ksu_handle_execveat" not in txt:
                   decl = (
                       "#ifdef CONFIG_KSU\n"
                       + ("extern bool ksu_execveat_hook __read_mostly;\n" if has_exec_hook_var else "")
-                      + "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n"
+                      + ("extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n" if has_exec_def else "")
                       + ("extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n" if has_exec_sucompat_def else "")
                       + "#endif\n"
                   )
-                  if has_exec_hook_var and has_exec_sucompat_def:
+                  if has_exec_hook_var and has_exec_def and has_exec_sucompat_def:
                       call = (
                           "#ifdef CONFIG_KSU\n"
                           "\tif (unlikely(ksu_execveat_hook))\n"
                           "\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n"
                           "\telse\n"
                           "\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n"
+                          "#endif\n"
+                      )
+                  elif has_exec_sucompat_def:
+                      call = (
+                          "#ifdef CONFIG_KSU\n"
+                          "\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n"
                           "#endif\n"
                       )
                   else:
@@ -178,16 +137,8 @@ jobs:
               with open("fs/open.c", "r") as f:
                   txt = f.read()
               if "ksu_handle_faccessat" not in txt:
-                  decl = (
-                      "#ifdef CONFIG_KSU\n"
-                      "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n"
-                      "#endif\n"
-                  )
-                  call = (
-                      "#ifdef CONFIG_KSU\n"
-                      "\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);\n"
-                      "#endif\n"
-                  )
+                  decl = "#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\n"
+                  call = "#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);\n#endif\n"
                   txt, n1 = re.subn(r'(long do_faccessat\s*\()', decl + r'\1', txt, count=1)
                   txt, n2 = re.subn(r'(if\s*\(\s*mode\s*&\s*~S_IRWXO\s*\))', call + r'\t\1', txt, count=1)
                   assert n1 == 1 and n2 == 1, f"Failed patching fs/open.c ({n1}, {n2})"
@@ -195,45 +146,13 @@ jobs:
                       f.write(txt)
                   print("Patched fs/open.c")
 
-          # Hook 3: fs/read_write.c (skipped if ksu_handle_vfs_read is not defined)
-          if has_vfs_read_def:
-              with open("fs/read_write.c", "r") as f:
-                  txt = f.read()
-              if "ksu_handle_vfs_read" not in txt:
-                  decl = (
-                      "#ifdef CONFIG_KSU\n"
-                      + ("extern bool ksu_vfs_read_hook __read_mostly;\n" if has_vfs_read_var else "")
-                      + "extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n"
-                      + "#endif\n"
-                  )
-                  call = (
-                      "#ifdef CONFIG_KSU\n"
-                      + ("\tif (unlikely(ksu_vfs_read_hook))\n\t\t" if has_vfs_read_var else "\t")
-                      + "ksu_handle_vfs_read(&file, &buf, &count, &pos);\n"
-                      + "#endif\n"
-                  )
-                  txt, n1 = re.subn(r'(ssize_t vfs_read\s*\()', decl + r'\1', txt, count=1)
-                  txt, n2 = re.subn(r'(if\s*\(\s*!\s*\(\s*file->f_mode\s*&\s*FMODE_READ\s*\)\s*\))', call + r'\t\1', txt, count=1)
-                  assert n1 == 1 and n2 == 1, f"Failed patching fs/read_write.c ({n1}, {n2})"
-                  with open("fs/read_write.c", "w") as f:
-                      f.write(txt)
-                  print("Patched fs/read_write.c")
-
-          # Hook 4: fs/stat.c
+          # Hook 3: fs/stat.c
           if has_stat_def:
               with open("fs/stat.c", "r") as f:
                   txt = f.read()
               if "ksu_handle_stat" not in txt:
-                  decl = (
-                      "#ifdef CONFIG_KSU\n"
-                      "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n"
-                      "#endif\n"
-                  )
-                  call = (
-                      "#ifdef CONFIG_KSU\n"
-                      "\tksu_handle_stat(&dfd, &filename, &flags);\n"
-                      "#endif\n"
-                  )
+                  decl = "#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n"
+                  call = "#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n"
                   txt, n1 = re.subn(r'(static int vfs_statx\s*\()', decl + r'\1', txt, count=1)
                   txt, n2 = re.subn(r'(if\s*\(\s*\(\s*flags\s*&\s*~\(\s*AT_SYMLINK_NOFOLLOW)', call + r'\t\1', txt, count=1)
                   assert n1 == 1 and n2 == 1, f"Failed patching fs/stat.c ({n1}, {n2})"
@@ -241,7 +160,7 @@ jobs:
                       f.write(txt)
                   print("Patched fs/stat.c")
 
-          # Hook 5: drivers/input/input.c
+          # Hook 4: drivers/input/input.c
           if has_input_def:
               with open("drivers/input/input.c", "r") as f:
                   txt = f.read()
@@ -265,7 +184,7 @@ jobs:
                       f.write(txt)
                   print("Patched drivers/input/input.c")
 
-          # 4. Patch check_version in kernel/module.c
+          # Patch check_version in kernel/module.c
           mod_file = "kernel/module.c"
           if os.path.exists(mod_file):
               os.chmod(mod_file, 0o644)
@@ -282,16 +201,9 @@ jobs:
                           mcontent = mcontent[:idx] + func_body + mcontent[end_idx:]
                           with open(mod_file, "w") as f:
                               f.write(mcontent)
-
-          rejs = sorted(glob.glob("**/*.rej", recursive=True))
-          if rejs:
-              for r in rejs:
-                  with open(r, "r") as f:
-                      print(f"--- REJECT: {r} ---\n{f.read()}")
-              raise SystemExit(1)
           EOF
 
-      - name: Link Hermetic Build Tools and Compile Kernel
+      - name: Link Hermetic Build Tools and Compile Kernel from Exact Stock Config
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
@@ -334,89 +246,42 @@ jobs:
           export M4="/usr/bin/m4"
           
           cd "$KERNEL_ROOT/kernel-5.10"
-          python3 - << 'EOF'
-          import os, re, subprocess
-          bsh = os.environ["KERNEL_ROOT"] + "/build_kernel.sh"
-          defcfg = "a24_00_defconfig"
-          overlays = "entry_level.config"
-          if os.path.exists(bsh):
-              with open(bsh, "r") as f:
-                  txt = f.read()
-              m1 = re.search(r'--kernel-defconfig\s+([^\s\\"]+)', txt)
-              m2 = re.search(r'--kernel-defconfig-overlays\s+"?([^"\n\\]+)"?', txt)
-              if m1 and "$" not in m1.group(1):
-                  defcfg = m1.group(1)
-              if m2 and "$" not in m2.group(1):
-                  overlays = m2.group(1)
-          os.makedirs("../out/target/product/a24/obj/KERNEL_OBJ", exist_ok=True)
-          cmd = [
-              "python", "scripts/gen_build_config.py",
-              "--kernel-defconfig", defcfg,
-              "--kernel-defconfig-overlays", overlays,
-              "-m", "user",
-              "-o", "../out/target/product/a24/obj/KERNEL_OBJ/build.config"
-          ]
-          subprocess.run(cmd, check=True)
-          EOF
+          OUT_FULL="$KERNEL_ROOT/out/target/product/a24/obj/KERNEL_OBJ"
+          mkdir -p "$OUT_FULL"
           
-          cat << 'EOF' >> "$KERNEL_ROOT/out/target/product/a24/obj/KERNEL_OBJ/build.config"
+          python scripts/gen_build_config.py \
+            --kernel-defconfig a24_00_defconfig \
+            --kernel-defconfig-overlays "entry_level.config" \
+            -m user \
+            -o "$OUT_FULL/build.config"
           
-          if [ -n "$POST_DEFCONFIG_CMDS" ]; then
-            POST_DEFCONFIG_CMDS="$POST_DEFCONFIG_CMDS && update_ksu_susfs_config"
-          else
-            POST_DEFCONFIG_CMDS="update_ksu_susfs_config"
+          # Use exact a24_stock_config.txt from the working device (keeps LTO_CLANG_FULL=y & SHADOW_CALL_STACK=y)
+          cp "$GITHUB_WORKSPACE/a24_stock_config.txt" "$OUT_FULL/.config"
+          ./scripts/config --file "$OUT_FULL/.config" \
+            -e CFI_PERMISSIVE \
+            -d TRIM_UNUSED_KSYMS \
+            -d UBSAN_TRAP \
+            -d WERROR \
+            -d SECURITY_DEFEX \
+            -d PROCA \
+            -d FIVE \
+            -d SECURITY_DSMS \
+            -d UH \
+            -d UH_RKP \
+            -d UH_LKMAUTH \
+            -d RKP \
+            -d KDP \
+            -d KDP_CRED \
+            -d KDP_NS \
+            -d LOCALVERSION_AUTO \
+            -e KSU
+          if [ -n "$STOCK_LOCALVER" ]; then
+            ./scripts/config --file "$OUT_FULL/.config" --set-str LOCALVERSION "$STOCK_LOCALVER"
           fi
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O="$OUT_FULL" olddefconfig
           
-          function update_ksu_susfs_config() {
-            ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-              -e SHADOW_CALL_STACK \
-              -e CFI_CLANG \
-              -e CFI_CLANG_SHADOW \
-              -e CFI_PERMISSIVE \
-              -d LTO_CLANG_FULL \
-              -e LTO_CLANG_THIN \
-              -d TRIM_UNUSED_KSYMS \
-              -d UBSAN_TRAP \
-              -d UBSAN \
-              -d WERROR \
-              -d SECURITY_DEFEX \
-              -d PROCA \
-              -d FIVE \
-              -d SECURITY_DSMS \
-              -d UH \
-              -d UH_RKP \
-              -d UH_LKMAUTH \
-              -d RKP \
-              -d KDP \
-              -d KDP_CRED \
-              -d KDP_NS \
-              -d MODULE_SIG_FORCE \
-              -d LOCALVERSION_AUTO \
-              -d KSU_KPROBES_HOOK \
-              -d KSU_WITH_KPROBES \
-              -e KSU_MANUAL_HOOK \
-              -e KSU \
-              -e KSU_SUSFS \
-              -e KSU_SUSFS_SUS_PATH \
-              -e KSU_SUSFS_SUS_MOUNT \
-              -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-              -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
-              -e KSU_SUSFS_SUS_KSTAT \
-              -e KSU_SUSFS_TRY_UMOUNT \
-              -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
-              -e KSU_SUSFS_SPOOF_UNAME \
-              -e KSU_SUSFS_ENABLE_LOG \
-              -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              -e KSU_SUSFS_OPEN_REDIRECT
-            if [ -n "$STOCK_LOCALVER" ]; then
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
-            fi
-            (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
-            echo "=== VERIFIED FINAL .CONFIG FLAGS ==="
-            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_UBSAN|CONFIG_TRIM_UNUSED|CONFIG_KSU|CONFIG_LTO_CLANG|CONFIG_LOCALVERSION" ${OUT_DIR}/.config || true
-          }
-          EOF
+          echo "=== VERIFIED EXACT STOCK + KSU .CONFIG ==="
+          grep -E "CONFIG_LTO_CLANG|CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_TRIM_UNUSED|CONFIG_KSU=|CONFIG_LOCALVERSION=" "$OUT_FULL/.config" || true
           
           python3 - << 'EOF'
           import os, re
@@ -438,6 +303,8 @@ jobs:
           export DIST_DIR="../out/target/product/a24/obj/KERNEL_OBJ"
           export BUILD_CONFIG="../out/target/product/a24/obj/KERNEL_OBJ/build.config"
           export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
+          export SKIP_DEFCONFIG=1
+          export SKIP_MRPROPER=1
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
           
