@@ -77,6 +77,7 @@ jobs:
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
       - name: Integrate KernelSU-Next (Manual Hooks) and Module Compatibility
+        if: false
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -285,28 +286,13 @@ jobs:
               -d TRIM_UNUSED_KSYMS \
               -d UBSAN_TRAP \
               -d WERROR \
-              -d SECURITY_DEFEX \
-              -d PROCA \
-              -d FIVE \
-              -d SECURITY_DSMS \
-              -d UH \
-              -d UH_RKP \
-              -d UH_LKMAUTH \
-              -d RKP \
-              -d KDP \
-              -d KDP_CRED \
-              -d KDP_NS \
               -d LOCALVERSION_AUTO \
-              -e KSU \
-              -e KSU_MANUAL_HOOK \
-              -d KSU_KPROBES_HOOK \
-              -d KSU_WITH_KPROBES \
-              -d KSU_SYSCALL_HOOK
+              -d KSU
             if [ -n "$STOCK_LOCALVER" ]; then
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
             fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
-            echo "=== VERIFIED EXACT STOCK + KSU .CONFIG ==="
+            echo "=== VERIFIED CLEAN STOCK .CONFIG ==="
             grep -E "CONFIG_KSU|CONFIG_LTO_CLANG|CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_TRIM_UNUSED|CONFIG_LOCALVERSION=" ${OUT_DIR}/.config || true
           }
           EOF
