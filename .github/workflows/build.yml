@@ -192,15 +192,12 @@ jobs:
           if os.path.exists(bsh):
               with open(bsh, "r") as f:
                   txt = f.read()
-              print("=== Samsung build_kernel.sh ===")
-              print(txt)
               m1 = re.search(r'--kernel-defconfig\s+([^\s\\"]+)', txt)
               m2 = re.search(r'--kernel-defconfig-overlays\s+"?([^"\n\\]+)"?', txt)
               if m1 and "$" not in m1.group(1):
                   defcfg = m1.group(1)
               if m2 and "$" not in m2.group(1):
                   overlays = m2.group(1)
-          print(f"Using defconfig={defcfg}, overlays={overlays}")
           os.makedirs("../out/target/product/a24/obj/KERNEL_OBJ", exist_ok=True)
           cmd = [
               "python", "scripts/gen_build_config.py",
@@ -214,7 +211,12 @@ jobs:
           
           cat << 'EOF' >> "$KERNEL_ROOT/out/target/product/a24/obj/KERNEL_OBJ/build.config"
           
-          POST_DEFCONFIG_CMDS="${POST_DEFCONFIG_CMDS} && update_ksu_susfs_config"
+          if [ -n "$POST_DEFCONFIG_CMDS" ]; then
+            POST_DEFCONFIG_CMDS="$POST_DEFCONFIG_CMDS && update_ksu_susfs_config"
+          else
+            POST_DEFCONFIG_CMDS="update_ksu_susfs_config"
+          fi
+          
           function update_ksu_susfs_config() {
             ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
               -d CFI_CLANG \
@@ -225,14 +227,19 @@ jobs:
               -d SECURITY_DEFEX \
               -d PROCA \
               -d FIVE \
+              -d SECURITY_DSMS \
+              -d UH \
               -d UH_RKP \
               -d UH_LKMAUTH \
+              -d RKP \
               -d KDP \
               -d KDP_CRED \
               -d KDP_NS \
               -d MODULE_SIG_FORCE \
               -d KSU_KPROBES_HOOK \
+              -d LOCALVERSION_AUTO \
               -e KSU \
+              -e KSU_MANUAL_HOOK \
               -e KSU_SUSFS \
               -e KSU_SUSFS_SUS_PATH \
               -e KSU_SUSFS_SUS_MOUNT \
@@ -246,9 +253,12 @@ jobs:
               -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
               -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
               -e KSU_SUSFS_OPEN_REDIRECT
+            if [ -n "$STOCK_LOCALVER" ]; then
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
+            fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
             echo "=== VERIFIED FINAL .CONFIG FLAGS ==="
-            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_KSU|CONFIG_LTO_CLANG" ${OUT_DIR}/.config || true
+            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_KSU|CONFIG_LTO_CLANG|CONFIG_LOCALVERSION" ${OUT_DIR}/.config || true
           }
           EOF
           
