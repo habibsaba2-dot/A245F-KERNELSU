@@ -91,7 +91,7 @@ jobs:
 
           # 1. Force same_magic() to always return 1
           content, n_magic = re.subn(
-              r'(static\s+int\s+same_magic\s*\([^)]*\)\s*\{)',
+              r'(static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{)',
               r'\1\n\treturn 1;',
               content,
               count=1,
