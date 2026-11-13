@@ -61,7 +61,7 @@ jobs:
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Integrate KernelSU-Next and SusFS
+      - name: Integrate KernelSU-Next, SusFS, and Module Compatibility
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -72,6 +72,27 @@ jobs:
           cp -r $HOME/susfs4ksu/kernel_patches/fs/* fs/
           cp -r $HOME/susfs4ksu/kernel_patches/include/linux/* include/linux/
           patch -p1 --fuzz=4 --no-backup-if-mismatch < $HOME/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
+          
+          python3 - << 'EOF'
+          import os, re
+          mod_file = "kernel/module.c"
+          if os.path.exists(mod_file):
+              os.chmod(mod_file, 0o644)
+              with open(mod_file, "r") as f:
+                  mcontent = f.read()
+              m = re.search(r'static\s+int\s+check_version\s*\([^;]*?\)\s*\{', mcontent, flags=re.DOTALL)
+              if m:
+                  idx = m.start()
+                  end_idx = mcontent.find("\n}", idx)
+                  if end_idx != -1:
+                      func_body = mcontent[idx:end_idx]
+                      if "return 0;" in func_body:
+                          func_body = func_body.replace("return 0;", "return 1;")
+                          mcontent = mcontent[:idx] + func_body + mcontent[end_idx:]
+                          with open(mod_file, "w") as f:
+                              f.write(mcontent)
+                          print("Patched check_version return value in kernel/module.c")
+          EOF
 
       - name: Configure Defconfig, ThinLTO, and Disable Protections
         run: |
@@ -160,21 +181,19 @@ jobs:
           
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
-          sed -i '/EXT_MODULES/d' ../out/target/product/a24/obj/KERNEL_OBJ/build.config
-          echo 'EXT_MODULES=""' >> ../out/target/product/a24/obj/KERNEL_OBJ/build.config
-          echo 'EXT_MODULES_MAKEFILE=""' >> ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           
           python3 - << 'EOF'
           import os
           bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
-          if os.path.exists(bsh):
-              os.chmod(bsh, 0o755)
-              with open(bsh, "r") as f:
-                  txt = f.read()
-              txt = txt.replace('if [ -n "${EXT_MODULES}" ]', 'EXT_MODULES=""; EXT_MODULES_MAKEFILE=""; if [ -n "${EXT_MODULES}" ]')
-              with open(bsh, "w") as f:
-                  f.write(txt)
-              print("Disabled external modules block in build.sh")
+          os.chmod(bsh, 0o755)
+          with open(bsh, "r") as f:
+              txt = f.read()
+          target = " Building external modules and installing them into staging directory"
+          assert target in txt, "Target banner not found in build.sh"
+          txt = txt.replace(target, ' Skipping external modules"\nEXT_MODULES=""\nEXT_MODULES_MAKEFILE=""\necho "External modules skipped')
+          with open(bsh, "w") as f:
+              f.write(txt)
+          print("Patched external modules banner in build.sh")
           EOF
           
           export ARCH=arm64
@@ -187,8 +206,6 @@ jobs:
           export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
-          export EXT_MODULES=""
-          export EXT_MODULES_MAKEFILE=""
           
           cd ../kernel
           ./build/build.sh 2>&1 | tee /tmp/build.log || {
