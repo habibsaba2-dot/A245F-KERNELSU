@@ -63,7 +63,7 @@ jobs:
 
       - name: Integrate KernelSU-Next and SusFS
         run: |
-          chmod -R u+w "$KERNEL_ROOT/kernel-5.10"
+          chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
           touch .scmversion
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
@@ -118,6 +118,7 @@ jobs:
       - name: Link Hermetic Build Tools and Compile Kernel
         run: |
           set -o pipefail
+          chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin"
           mkdir -p "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin"
@@ -167,6 +168,7 @@ jobs:
           import os
           bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
           if os.path.exists(bsh):
+              os.chmod(bsh, 0o755)
               with open(bsh, "r") as f:
                   txt = f.read()
               txt = txt.replace('if [ -n "${EXT_MODULES}" ]', 'EXT_MODULES=""; EXT_MODULES_MAKEFILE=""; if [ -n "${EXT_MODULES}" ]')
