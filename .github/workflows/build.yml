@@ -76,7 +76,7 @@ jobs:
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Patch Module Version Checks (Bypass vermagic and modversions)
+      - name: Patch Module Version Checks (ISO C90 Safe)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -89,34 +89,43 @@ jobs:
           with open(mod_file, "r") as f:
               content = f.read()
 
-          # 1. Force same_magic() to always return 1
-          content, n_magic = re.subn(
-              r'(static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{)',
-              r'\1\n\treturn 1;',
+          def replace_func_body(src, func_pattern, new_body):
+              m = re.search(func_pattern, src, flags=re.DOTALL)
+              assert m, f"Pattern not found: {func_pattern}"
+              start_brace = m.end() - 1
+              depth = 0
+              end_brace = -1
+              for i in range(start_brace, len(src)):
+                  if src[i] == '{':
+                      depth += 1
+                  elif src[i] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          end_brace = i
+                          break
+              assert end_brace != -1, f"Matching brace not found for {func_pattern}"
+              return src[:start_brace] + new_body + src[end_brace + 1:]
+
+          content = replace_func_body(
               content,
-              count=1,
-              flags=re.DOTALL
+              r'static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{',
+              '{\n\t(void)amagic;\n\t(void)bmagic;\n\t(void)has_crcs;\n\treturn 1;\n}'
           )
 
-          # 2. Force check_version() to always return 1 (covers module_layout and all symbol CRCs)
-          content, n_ver = re.subn(
-              r'(static\s+(?:inline\s+)?int\s+check_version\s*\([^)]*\)\s*\{)',
-              r'\1\n\treturn 1;',
+          content = replace_func_body(
               content,
-              count=1,
-              flags=re.DOTALL
+              r'static\s+(?:inline\s+)?int\s+check_version\s*\([^)]*\)\s*\{',
+              '{\n\t(void)info;\n\t(void)symname;\n\t(void)mod;\n\t(void)crc;\n\treturn 1;\n}'
           )
-
-          print(f"Patched same_magic: {n_magic}, check_version: {n_ver}")
-          assert n_magic == 1 and n_ver == 1, "Failed to patch kernel/module.c!"
 
           with open(mod_file, "w") as f:
               f.write(content)
+          print("Successfully replaced same_magic and check_version bodies (ISO C90 compliant).")
           EOF
 
           echo "=== VERIFIED kernel/module.c PATCH ==="
-          grep -n -A 4 "same_magic(" kernel/module.c || true
-          grep -n -A 6 "check_version(" kernel/module.c || true
+          grep -n -A 7 "same_magic(" kernel/module.c | head -n 10 || true
+          grep -n -A 8 "check_version(" kernel/module.c | head -n 12 || true
 
       - name: Integrate KernelSU-Next (Manual Hooks)
         if: false
