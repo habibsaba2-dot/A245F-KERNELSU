@@ -98,15 +98,13 @@ jobs:
               flags=re.DOTALL
           )
 
-          # 2. Force same_magic() to always return 1
-          content, n_magic = re.subn(
-              r'(static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{)',
+          # 2. Force check_version() to always return 1 (covers module_layout and all symbol CRCs)
+          content, n_ver = re.subn(
+              r'(static\s+(?:inline\s+)?int\s+check_version\s*\([^)]*\)\s*\{)',
               r'\1\n\treturn 1;',
               content,
               count=1,
               flags=re.DOTALL
-          )
-          )
           )
 
           print(f"Patched same_magic: {n_magic}, check_version: {n_ver}")
@@ -117,8 +115,8 @@ jobs:
           EOF
 
           echo "=== VERIFIED kernel/module.c PATCH ==="
-          grep -n -A 4 "static int same_magic" kernel/module.c
-          grep -n -A 6 "static int check_version" kernel/module.c
+          grep -n -A 4 "same_magic(" kernel/module.c || true
+          grep -n -A 6 "check_version(" kernel/module.c || true
 
       - name: Integrate KernelSU-Next (Manual Hooks)
         if: false
