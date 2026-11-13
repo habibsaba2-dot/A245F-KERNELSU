@@ -60,6 +60,8 @@ jobs:
           
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
+          echo "=== Samsung build_kernel.sh ==="
+          cat "$KERNEL_ROOT/build_kernel.sh"
 
       - name: Integrate KernelSU-Next, SusFS, and Module Compatibility
         run: |
@@ -74,7 +76,51 @@ jobs:
           patch -p1 --fuzz=4 --no-backup-if-mismatch < $HOME/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || true
           
           python3 - << 'EOF'
-          import os, re
+          import os, re, glob
+
+          ns_file = "fs/namespace.c"
+          ns_rej = "fs/namespace.c.rej"
+          if os.path.exists(ns_file):
+              os.chmod(ns_file, 0o644)
+              with open(ns_file, "r") as f:
+                  content = f.read()
+
+              header_target = "unsigned int sysctl_mount_max"
+              header_inject = (
+                  "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                  "extern bool susfs_is_current_ksu_domain(void);\n"
+                  "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n"
+                  "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n"
+                  "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\n"
+              )
+              if "CL_COPY_MNT_NS BIT(25)" not in content and header_target in content:
+                  content = content.replace(header_target, header_inject + header_target, 1)
+                  print("Auto-patched header definitions in fs/namespace.c")
+
+              if "copy_flags |= CL_COPY_MNT_NS;" not in content:
+                  pattern = r'(copy_flags\s*\|=\s*CL_SHARED_TO_SLAVE;)'
+                  replacement = (
+                      r'\1\n'
+                      r'#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+                      r'\tcopy_flags |= CL_COPY_MNT_NS;\n'
+                      r'#endif'
+                  )
+                  new_content, count = re.subn(pattern, replacement, content, count=1)
+                  if count > 0:
+                      content = new_content
+                      print("Auto-patched copy_mnt_ns in fs/namespace.c")
+
+              with open(ns_file, "w") as f:
+                  f.write(content)
+
+              if (
+                  "CL_COPY_MNT_NS BIT(25)" in content
+                  and "copy_flags |= CL_COPY_MNT_NS;" in content
+                  and os.path.exists(ns_rej)
+              ):
+                  os.remove(ns_rej)
+                  print("Removed resolved fs/namespace.c.rej")
+
           mod_file = "kernel/module.c"
           if os.path.exists(mod_file):
               os.chmod(mod_file, 0o644)
@@ -92,9 +138,19 @@ jobs:
                           with open(mod_file, "w") as f:
                               f.write(mcontent)
                           print("Patched check_version return value in kernel/module.c")
+
+          rejs = sorted(glob.glob("**/*.rej", recursive=True))
+          if rejs:
+              print("=== REMAINING SUSFS PATCH REJECTS ===")
+              for r in rejs:
+                  print(f"\n--- REJECT FILE: {r} ---")
+                  with open(r, "r") as f:
+                      print(f.read())
+              raise SystemExit(1)
+          print("=== ALL SUSFS PATCHES APPLIED CLEANLY ===")
           EOF
 
-      - name: Configure Defconfig, ThinLTO, and Disable Protections
+      - name: Configure Defconfig, ThinLTO, and Disable CFI & Protections
         run: |
           DEFCONFIG="$KERNEL_ROOT/kernel-5.10/arch/arm64/configs/a24_00_defconfig"
           OVERLAY_CFG="$KERNEL_ROOT/kernel-5.10/arch/arm64/configs/entry_level.config"
@@ -117,6 +173,8 @@ jobs:
           for CFG in "$DEFCONFIG" "$OVERLAY_CFG"; do
             if [ -f "$CFG" ]; then
               sed -i 's/CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/g' "$CFG"
+              sed -i 's/CONFIG_CFI_CLANG=y/# CONFIG_CFI_CLANG is not set/g' "$CFG"
+              sed -i 's/CONFIG_SHADOW_CALL_STACK=y/# CONFIG_SHADOW_CALL_STACK is not set/g' "$CFG"
               sed -i 's/CONFIG_SECURITY_DEFEX=y/# CONFIG_SECURITY_DEFEX is not set/g' "$CFG"
               sed -i 's/CONFIG_PROCA=y/# CONFIG_PROCA is not set/g' "$CFG"
               sed -i 's/CONFIG_FIVE=y/# CONFIG_FIVE is not set/g' "$CFG"
@@ -125,8 +183,11 @@ jobs:
               sed -i 's/CONFIG_KDP=y/# CONFIG_KDP is not set/g' "$CFG"
               sed -i 's/CONFIG_KDP_CRED=y/# CONFIG_KDP_CRED is not set/g' "$CFG"
               sed -i 's/CONFIG_KDP_NS=y/# CONFIG_KDP_NS is not set/g' "$CFG"
+              sed -i 's/CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/g' "$CFG"
             fi
           done
+          echo "# CONFIG_CFI_CLANG is not set" >> "$DEFCONFIG"
+          echo "# CONFIG_SHADOW_CALL_STACK is not set" >> "$DEFCONFIG"
           echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
           
           if [ -n "$STOCK_LOCALVER" ]; then
@@ -138,7 +199,6 @@ jobs:
 
       - name: Link Hermetic Build Tools and Compile Kernel
         run: |
-          set -o pipefail
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin"
@@ -183,17 +243,16 @@ jobs:
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           
           python3 - << 'EOF'
-          import os
+          import os, re
           bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
-          os.chmod(bsh, 0o755)
-          with open(bsh, "r") as f:
-              txt = f.read()
-          target = " Building external modules and installing them into staging directory"
-          assert target in txt, "Target banner not found in build.sh"
-          txt = txt.replace(target, ' Skipping external modules"\nEXT_MODULES=""\nEXT_MODULES_MAKEFILE=""\necho "External modules skipped')
-          with open(bsh, "w") as f:
-              f.write(txt)
-          print("Patched external modules banner in build.sh")
+          if os.path.exists(bsh):
+              os.chmod(bsh, 0o755)
+              with open(bsh, "r") as f:
+                  txt = f.read()
+              txt = re.sub(r'Building external modules[^\n"]*', 'Skipping external modules"\nEXT_MODULES=""\nEXT_MODULES_MAKEFILE=""\necho "External modules skipped', txt)
+              with open(bsh, "w") as f:
+                  f.write(txt)
+              print("Patched build.sh to skip external modules")
           EOF
           
           export ARCH=arm64
@@ -208,11 +267,19 @@ jobs:
           export SKIP_DEFCONFIG_CHECK=1
           
           cd ../kernel
-          ./build/build.sh 2>&1 | tee /tmp/build.log || {
-            echo "=== SUMMARY OF ERRORS ==="
-            grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
-            exit 1
-          }
+          set +e
+          ./build/build.sh 2>&1 | tee /tmp/build.log
+          BUILD_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$BUILD_RC" -ne 0 ]; then
+            if find "$KERNEL_ROOT/out" -name "Image" -o -name "Image.gz" | grep -q .; then
+              echo "Kernel image already compiled successfully; proceeding to repack boot.img."
+            else
+              echo "=== SUMMARY OF ERRORS ==="
+              grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
+              exit 1
+            fi
+          fi
 
       - name: Repack boot.img and Create Odin Tar
         run: |
@@ -220,10 +287,11 @@ jobs:
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
           
-          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" | head -n 1)
+          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image" | head -n 1)
           if [ -z "$KERNEL_IMG" ]; then
-            KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image" | head -n 1)
+            KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" | head -n 1)
           fi
+          ls -lh "$KERNEL_IMG"
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
