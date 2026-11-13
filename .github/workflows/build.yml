@@ -65,6 +65,7 @@ jobs:
         run: |
           chmod -R u+w "$KERNEL_ROOT/kernel-5.10"
           cd "$KERNEL_ROOT/kernel-5.10"
+          touch .scmversion
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
           git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git $HOME/susfs4ksu
@@ -158,8 +159,21 @@ jobs:
           
           cd "$KERNEL_ROOT/kernel-5.10"
           python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
-          sed -i '/^EXT_MODULES=/d' ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          sed -i '/EXT_MODULES/d' ../out/target/product/a24/obj/KERNEL_OBJ/build.config
           echo 'EXT_MODULES=""' >> ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          echo 'EXT_MODULES_MAKEFILE=""' >> ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          
+          python3 - << 'EOF'
+          import os
+          bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
+          if os.path.exists(bsh):
+              with open(bsh, "r") as f:
+                  txt = f.read()
+              txt = txt.replace('if [ -n "${EXT_MODULES}" ]', 'EXT_MODULES=""; EXT_MODULES_MAKEFILE=""; if [ -n "${EXT_MODULES}" ]')
+              with open(bsh, "w") as f:
+                  f.write(txt)
+              print("Disabled external modules block in build.sh")
+          EOF
           
           export ARCH=arm64
           export PLATFORM_VERSION=13
@@ -172,6 +186,7 @@ jobs:
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
           export EXT_MODULES=""
+          export EXT_MODULES_MAKEFILE=""
           
           cd ../kernel
           ./build/build.sh 2>&1 | tee /tmp/build.log || {
