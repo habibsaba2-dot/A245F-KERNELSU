@@ -98,13 +98,15 @@ jobs:
               flags=re.DOTALL
           )
 
-          # 2. Force check_version() to always return 1 (covers module_layout and all symbol CRCs)
-          content, n_ver = re.subn(
-              r'(static\s+int\s+check_version\s*\([^)]*\)\s*\{)',
+          # 2. Force same_magic() to always return 1
+          content, n_magic = re.subn(
+              r'(static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{)',
               r'\1\n\treturn 1;',
               content,
               count=1,
               flags=re.DOTALL
+          )
+          )
           )
 
           print(f"Patched same_magic: {n_magic}, check_version: {n_ver}")
