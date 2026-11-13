@@ -219,11 +219,13 @@ jobs:
           
           function update_ksu_susfs_config() {
             ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-              -d CFI_CLANG \
-              -d CFI_PERMISSIVE \
-              -d SHADOW_CALL_STACK \
+              -e SHADOW_CALL_STACK \
+              -e CFI_CLANG \
+              -e CFI_CLANG_SHADOW \
+              -e CFI_PERMISSIVE \
               -d LTO_CLANG_FULL \
               -e LTO_CLANG_THIN \
+              -d TRIM_UNUSED_KSYMS \
               -d SECURITY_DEFEX \
               -d PROCA \
               -d FIVE \
@@ -256,7 +258,7 @@ jobs:
             fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
             echo "=== VERIFIED FINAL .CONFIG FLAGS ==="
-            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_KSU|CONFIG_LTO_CLANG|CONFIG_LOCALVERSION" ${OUT_DIR}/.config || true
+            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_TRIM_UNUSED|CONFIG_KSU|CONFIG_LTO_CLANG|CONFIG_LOCALVERSION" ${OUT_DIR}/.config || true
           }
           EOF
           
