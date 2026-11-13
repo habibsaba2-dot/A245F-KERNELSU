@@ -76,7 +76,7 @@ jobs:
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Patch Module Version Checks (ISO C90 Safe)
+      - name: Patch Module Version Checks (Clean Compiler Safe)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -89,7 +89,7 @@ jobs:
           with open(mod_file, "r") as f:
               content = f.read()
 
-          def replace_func_body(src, func_pattern, new_body):
+          def patch_func_body(src, func_pattern, transform_fn):
               m = re.search(func_pattern, src, flags=re.DOTALL)
               assert m, f"Pattern not found: {func_pattern}"
               start_brace = m.end() - 1
@@ -104,28 +104,40 @@ jobs:
                           end_brace = i
                           break
               assert end_brace != -1, f"Matching brace not found for {func_pattern}"
+              old_body = src[start_brace:end_brace + 1]
+              new_body = transform_fn(old_body)
               return src[:start_brace] + new_body + src[end_brace + 1:]
 
-          content = replace_func_body(
+          content = patch_func_body(
               content,
               r'static\s+(?:inline\s+)?int\s+same_magic\s*\([^)]*\)\s*\{',
-              '{\n\t(void)amagic;\n\t(void)bmagic;\n\t(void)has_crcs;\n\treturn 1;\n}'
+              lambda _: '{\n\t(void)amagic;\n\t(void)bmagic;\n\t(void)has_crcs;\n\treturn 1;\n}'
           )
 
-          content = replace_func_body(
+          def force_check_version_ok(body):
+              assert "return 0;" in body, "return 0; not found inside check_version!"
+              body = body.replace("return 0;", "return 1;")
+              body = re.sub(
+                  r'return\s+try_to_force_load\s*\(([^)]*)\)\s*==\s*0\s*;',
+                  r'{ try_to_force_load(\1); return 1; }',
+                  body
+              )
+              return body
+
+          content = patch_func_body(
               content,
               r'static\s+(?:inline\s+)?int\s+check_version\s*\([^)]*\)\s*\{',
-              '{\n\t(void)info;\n\t(void)symname;\n\t(void)mod;\n\t(void)crc;\n\treturn 1;\n}'
+              force_check_version_ok
           )
 
           with open(mod_file, "w") as f:
               f.write(content)
-          print("Successfully replaced same_magic and check_version bodies (ISO C90 compliant).")
+          print("Successfully patched same_magic and check_version without unused function warnings.")
           EOF
 
           echo "=== VERIFIED kernel/module.c PATCH ==="
           grep -n -A 7 "same_magic(" kernel/module.c | head -n 10 || true
-          grep -n -A 8 "check_version(" kernel/module.c | head -n 12 || true
+          grep -n -B 4 -A 4 "disagrees about version" kernel/module.c || true
 
       - name: Integrate KernelSU-Next (Manual Hooks)
         if: false
