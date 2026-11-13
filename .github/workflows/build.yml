@@ -60,8 +60,6 @@ jobs:
           
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
-          echo "=== Samsung build_kernel.sh ==="
-          cat "$KERNEL_ROOT/build_kernel.sh"
 
       - name: Integrate KernelSU-Next, SusFS, and Module Compatibility
         run: |
@@ -95,7 +93,6 @@ jobs:
               )
               if "CL_COPY_MNT_NS BIT(25)" not in content and header_target in content:
                   content = content.replace(header_target, header_inject + header_target, 1)
-                  print("Auto-patched header definitions in fs/namespace.c")
 
               if "copy_flags |= CL_COPY_MNT_NS;" not in content:
                   pattern = r'(copy_flags\s*\|=\s*CL_SHARED_TO_SLAVE;)'
@@ -108,7 +105,6 @@ jobs:
                   new_content, count = re.subn(pattern, replacement, content, count=1)
                   if count > 0:
                       content = new_content
-                      print("Auto-patched copy_mnt_ns in fs/namespace.c")
 
               with open(ns_file, "w") as f:
                   f.write(content)
@@ -119,7 +115,6 @@ jobs:
                   and os.path.exists(ns_rej)
               ):
                   os.remove(ns_rej)
-                  print("Removed resolved fs/namespace.c.rej")
 
           mod_file = "kernel/module.c"
           if os.path.exists(mod_file):
@@ -137,65 +132,14 @@ jobs:
                           mcontent = mcontent[:idx] + func_body + mcontent[end_idx:]
                           with open(mod_file, "w") as f:
                               f.write(mcontent)
-                          print("Patched check_version return value in kernel/module.c")
 
           rejs = sorted(glob.glob("**/*.rej", recursive=True))
           if rejs:
-              print("=== REMAINING SUSFS PATCH REJECTS ===")
               for r in rejs:
-                  print(f"\n--- REJECT FILE: {r} ---")
                   with open(r, "r") as f:
-                      print(f.read())
+                      print(f"--- REJECT: {r} ---\n{f.read()}")
               raise SystemExit(1)
-          print("=== ALL SUSFS PATCHES APPLIED CLEANLY ===")
           EOF
-
-      - name: Configure Defconfig, ThinLTO, and Disable CFI & Protections
-        run: |
-          DEFCONFIG="$KERNEL_ROOT/kernel-5.10/arch/arm64/configs/a24_00_defconfig"
-          OVERLAY_CFG="$KERNEL_ROOT/kernel-5.10/arch/arm64/configs/entry_level.config"
-          
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEFCONFIG
-          
-          for CFG in "$DEFCONFIG" "$OVERLAY_CFG"; do
-            if [ -f "$CFG" ]; then
-              sed -i 's/CONFIG_LTO_CLANG_FULL=y/# CONFIG_LTO_CLANG_FULL is not set/g' "$CFG"
-              sed -i 's/CONFIG_CFI_CLANG=y/# CONFIG_CFI_CLANG is not set/g' "$CFG"
-              sed -i 's/CONFIG_SHADOW_CALL_STACK=y/# CONFIG_SHADOW_CALL_STACK is not set/g' "$CFG"
-              sed -i 's/CONFIG_SECURITY_DEFEX=y/# CONFIG_SECURITY_DEFEX is not set/g' "$CFG"
-              sed -i 's/CONFIG_PROCA=y/# CONFIG_PROCA is not set/g' "$CFG"
-              sed -i 's/CONFIG_FIVE=y/# CONFIG_FIVE is not set/g' "$CFG"
-              sed -i 's/CONFIG_UH_RKP=y/# CONFIG_UH_RKP is not set/g' "$CFG"
-              sed -i 's/CONFIG_UH_LKMAUTH=y/# CONFIG_UH_LKMAUTH is not set/g' "$CFG"
-              sed -i 's/CONFIG_KDP=y/# CONFIG_KDP is not set/g' "$CFG"
-              sed -i 's/CONFIG_KDP_CRED=y/# CONFIG_KDP_CRED is not set/g' "$CFG"
-              sed -i 's/CONFIG_KDP_NS=y/# CONFIG_KDP_NS is not set/g' "$CFG"
-              sed -i 's/CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/g' "$CFG"
-            fi
-          done
-          echo "# CONFIG_CFI_CLANG is not set" >> "$DEFCONFIG"
-          echo "# CONFIG_SHADOW_CALL_STACK is not set" >> "$DEFCONFIG"
-          echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
-          
-          if [ -n "$STOCK_LOCALVER" ]; then
-            sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
-            sed -i '/^CONFIG_LOCALVERSION_AUTO=/d' "$DEFCONFIG"
-            echo "CONFIG_LOCALVERSION=\"$STOCK_LOCALVER\"" >> "$DEFCONFIG"
-            echo "# CONFIG_LOCALVERSION_AUTO is not set" >> "$DEFCONFIG"
-          fi
 
       - name: Link Hermetic Build Tools and Compile Kernel
         run: |
@@ -240,7 +184,73 @@ jobs:
           export M4="/usr/bin/m4"
           
           cd "$KERNEL_ROOT/kernel-5.10"
-          python scripts/gen_build_config.py --kernel-defconfig a24_00_defconfig --kernel-defconfig-overlays "entry_level.config" -m user -o ../out/target/product/a24/obj/KERNEL_OBJ/build.config
+          python3 - << 'EOF'
+          import os, re, subprocess
+          bsh = os.environ["KERNEL_ROOT"] + "/build_kernel.sh"
+          defcfg = "a24_00_defconfig"
+          overlays = "entry_level.config"
+          if os.path.exists(bsh):
+              with open(bsh, "r") as f:
+                  txt = f.read()
+              print("=== Samsung build_kernel.sh ===")
+              print(txt)
+              m1 = re.search(r'--kernel-defconfig\s+([^\s\\"]+)', txt)
+              m2 = re.search(r'--kernel-defconfig-overlays\s+"?([^"\n\\]+)"?', txt)
+              if m1 and "$" not in m1.group(1):
+                  defcfg = m1.group(1)
+              if m2 and "$" not in m2.group(1):
+                  overlays = m2.group(1)
+          print(f"Using defconfig={defcfg}, overlays={overlays}")
+          os.makedirs("../out/target/product/a24/obj/KERNEL_OBJ", exist_ok=True)
+          cmd = [
+              "python", "scripts/gen_build_config.py",
+              "--kernel-defconfig", defcfg,
+              "--kernel-defconfig-overlays", overlays,
+              "-m", "user",
+              "-o", "../out/target/product/a24/obj/KERNEL_OBJ/build.config"
+          ]
+          subprocess.run(cmd, check=True)
+          EOF
+          
+          cat << 'EOF' >> "$KERNEL_ROOT/out/target/product/a24/obj/KERNEL_OBJ/build.config"
+          
+          POST_DEFCONFIG_CMDS="${POST_DEFCONFIG_CMDS} && update_ksu_susfs_config"
+          function update_ksu_susfs_config() {
+            ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
+              -d CFI_CLANG \
+              -d CFI_PERMISSIVE \
+              -d SHADOW_CALL_STACK \
+              -d LTO_CLANG_FULL \
+              -e LTO_CLANG_THIN \
+              -d SECURITY_DEFEX \
+              -d PROCA \
+              -d FIVE \
+              -d UH_RKP \
+              -d UH_LKMAUTH \
+              -d KDP \
+              -d KDP_CRED \
+              -d KDP_NS \
+              -d MODULE_SIG_FORCE \
+              -d KSU_KPROBES_HOOK \
+              -e KSU \
+              -e KSU_SUSFS \
+              -e KSU_SUSFS_SUS_PATH \
+              -e KSU_SUSFS_SUS_MOUNT \
+              -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+              -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+              -e KSU_SUSFS_SUS_KSTAT \
+              -e KSU_SUSFS_TRY_UMOUNT \
+              -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+              -e KSU_SUSFS_SPOOF_UNAME \
+              -e KSU_SUSFS_ENABLE_LOG \
+              -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              -e KSU_SUSFS_OPEN_REDIRECT
+            (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
+            echo "=== VERIFIED FINAL .CONFIG FLAGS ==="
+            grep -E "CONFIG_CFI|CONFIG_SHADOW_CALL|CONFIG_KSU|CONFIG_LTO_CLANG" ${OUT_DIR}/.config || true
+          }
+          EOF
           
           python3 - << 'EOF'
           import os, re
@@ -252,7 +262,6 @@ jobs:
               txt = re.sub(r'Building external modules[^\n"]*', 'Skipping external modules"\nEXT_MODULES=""\nEXT_MODULES_MAKEFILE=""\necho "External modules skipped', txt)
               with open(bsh, "w") as f:
                   f.write(txt)
-              print("Patched build.sh to skip external modules")
           EOF
           
           export ARCH=arm64
@@ -272,10 +281,9 @@ jobs:
           BUILD_RC=${PIPESTATUS[0]}
           set -e
           if [ "$BUILD_RC" -ne 0 ]; then
-            if find "$KERNEL_ROOT/out" -name "Image" -o -name "Image.gz" | grep -q .; then
-              echo "Kernel image already compiled successfully; proceeding to repack boot.img."
+            if find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image*" | grep -q .; then
+              echo "Kernel image compiled successfully; proceeding to repack boot.img."
             else
-              echo "=== SUMMARY OF ERRORS ==="
               grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
               exit 1
             fi
@@ -287,9 +295,9 @@ jobs:
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
           
-          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image" | head -n 1)
+          KERNEL_IMG=$(find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image" | head -n 1)
           if [ -z "$KERNEL_IMG" ]; then
-            KERNEL_IMG=$(find "$KERNEL_ROOT/out" -name "Image.gz" | head -n 1)
+            KERNEL_IMG=$(find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image.gz" | head -n 1)
           fi
           ls -lh "$KERNEL_IMG"
           cp "$KERNEL_IMG" kernel
