@@ -76,7 +76,7 @@ jobs:
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Patch Module Version Checks (Clean Compiler Safe)
+      - name: Patch Module Version Checks & Neutralize UH/RKP Force-Selects
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -132,12 +132,23 @@ jobs:
 
           with open(mod_file, "w") as f:
               f.write(content)
-          print("Successfully patched same_magic and check_version without unused function warnings.")
-          EOF
+          print("Successfully patched same_magic and check_version.")
 
-          echo "=== VERIFIED kernel/module.c PATCH ==="
-          grep -n -A 7 "same_magic(" kernel/module.c | head -n 10 || true
-          grep -n -B 4 -A 4 "disagrees about version" kernel/module.c || true
+          # Prevent Kconfig from force-selecting UH, RKP, KDP, PROCA, FIVE, DEFEX
+          blocked_syms = r'(?:UH|RKP|RKP_KDP|KDP|KDP_CRED|KDP_NS|KDP_DMAP|PROCA|PROCA_GKI_10|PROCA_GKI_20|FIVE|SECURITY_DEFEX)'
+          for root, _, files in os.walk("."):
+              for fn in files:
+                  if fn.startswith("Kconfig"):
+                      kp = os.path.join(root, fn)
+                      with open(kp, "r", errors="ignore") as f:
+                          ktxt = f.read()
+                      new_ktxt, cnt = re.subn(rf'(?m)^(\s*select\s+{blocked_syms}\b.*)$', r'# \1', ktxt)
+                      if cnt > 0:
+                          os.chmod(kp, 0o644)
+                          with open(kp, "w") as f:
+                              f.write(new_ktxt)
+                          print(f"Neutralized {cnt} force-selects in {kp}")
+          EOF
 
       - name: Integrate KernelSU-Next (Manual Hooks)
         if: false
@@ -252,7 +263,7 @@ jobs:
                       f.write(txt)
           EOF
 
-      - name: Link Hermetic Build Tools and Compile Kernel from Exact Stock Config
+      - name: Link Hermetic Build Tools and Compile Kernel (UH/RKP Disabled)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
@@ -320,11 +331,30 @@ jobs:
               -d UBSAN_TRAP \
               -d WERROR \
               -d LOCALVERSION_AUTO \
+              -d UH \
+              -d RKP \
+              -d RKP_KDP \
+              -d KDP \
+              -d KDP_CRED \
+              -d KDP_NS \
+              -d KDP_DMAP \
+              -d PROCA \
+              -d PROCA_GKI_10 \
+              -d PROCA_GKI_20 \
+              -d FIVE \
+              -d SECURITY_DEFEX \
+              -d SAMSUNG_PRODUCT_SHIP \
               -d KSU
             if [ -n "$STOCK_LOCALVER" ]; then
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
             fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
+            echo "=== VERIFYING SECURITY CONFIGS ARE DISABLED ==="
+            grep -E "CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX)[= ]" ${OUT_DIR}/.config || true
+            if grep -qE "^CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX)=y" ${OUT_DIR}/.config; then
+              echo "ERROR: One or more Samsung hypervisor/security flags stayed enabled!"
+              exit 1
+            fi
           }
           EOF
           
@@ -348,6 +378,7 @@ jobs:
           export DIST_DIR="../out/target/product/a24/obj/KERNEL_OBJ"
           export BUILD_CONFIG="../out/target/product/a24/obj/KERNEL_OBJ/build.config"
           export CLANG_PREBUILT_BIN="$HOME/toolchain/clang-r416183b/bin"
+          export KCFLAGS="-Wno-error"
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
           
@@ -365,7 +396,7 @@ jobs:
             fi
           fi
 
-      - name: Repack boot.img and Create Odin Tar
+      - name: Repack boot.img, Generate Disabled vbmeta.img, and Create Odin Tar
         run: |
           mkdir -p /home/runner/output && cd /home/runner/output
           cp $HOME/work/boot.img .
@@ -379,10 +410,26 @@ jobs:
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
-          tar -cvf A245F_KSU_SusFS_boot.tar boot.img
+          
+          python3 - << 'EOF'
+          import struct
+          # Standard 4096-byte AVB 2.0 disabled vbmeta.img (flags = 3: hashtree + verification disabled)
+          vbmeta = bytearray(4096)
+          vbmeta[0:4] = b'AVB0'
+          struct.pack_into('>I', vbmeta, 4, 1)      # required_libavb_version_major = 1
+          struct.pack_into('>I', vbmeta, 8, 0)      # required_libavb_version_minor = 0
+          struct.pack_into('>I', vbmeta, 120, 3)    # flags = 3 (AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED | HASHTREE_DISABLED)
+          vbmeta[128:128+14] = b'avbtool 1.2.0\x00'
+          with open('vbmeta.img', 'wb') as f:
+              f.write(vbmeta)
+          print("Generated 4096-byte disabled vbmeta.img (flags=3).")
+          EOF
+          
+          ls -lh boot.img vbmeta.img
+          tar --format=ustar -cvf A245F_KSU_SusFS_boot_vbmeta.tar boot.img vbmeta.img
 
       - name: Upload Ready Odin Package
         uses: actions/upload-artifact@v4
         with:
           name: A245F-KSU-SusFS-Odin
-          path: /home/runner/output/A245F_KSU_SusFS_boot.tar
+          path: /home/runner/output/A245F_KSU_SusFS_boot_vbmeta.tar
