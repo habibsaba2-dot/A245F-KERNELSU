@@ -1,4 +1,4 @@
-name: Build A245F Stock-Config Reference Test
+name: Build A245F KernelSU-Next + Matched Vendor Modules
 
 on:
   workflow_dispatch:
@@ -50,7 +50,7 @@ jobs:
           unzip -p magisk.zip lib/x86_64/libmagiskboot.so > magiskboot
           chmod +x magiskboot
 
-      - name: Download and Merge Kernel Source Parts
+      - name: Download Kernel Source, boot.img, and vendor_boot.img
         run: |
           mkdir -p $HOME/work && cd $HOME/work
           wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.001
@@ -59,6 +59,7 @@ jobs:
           wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.004
           wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/Kernel.tar.tar.005
           wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/boot.img.lz4
+          wget https://github.com/habibsaba2-dot/A245F-KERNELSU/releases/download/v1.0/vendor_boot.img
           cat Kernel.tar.tar.* > Kernel.tar.tar
           tar -xf Kernel.tar.tar
           tar -xzf Kernel.tar.gz
@@ -132,11 +133,10 @@ jobs:
 
           with open(mod_file, "w") as f:
               f.write(content)
-          print("Successfully patched same_magic and check_version while keeping UH/RKP intact.")
+          print("Successfully patched same_magic and check_version.")
           EOF
 
-      - name: Integrate KernelSU-Next (Manual Hooks)
-        if: false
+      - name: Integrate KernelSU-Next (Manual Hooks Only)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -248,7 +248,7 @@ jobs:
                       f.write(txt)
           EOF
 
-      - name: Link Hermetic Build Tools and Compile Reference Kernel (Stock Config)
+      - name: Link Hermetic Build Tools and Compile Kernel + External Modules
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
@@ -315,26 +315,16 @@ jobs:
               -d UBSAN_TRAP \
               -d WERROR \
               -d LOCALVERSION_AUTO \
-              -d KSU
+              -e KSU \
+              -d KSU_WITH_KPROBES \
+              -d KSU_KPROBES_HOOK
             if [ -n "$STOCK_LOCALVER" ]; then
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
             fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
-            echo "=== VERIFYING STOCK UH/RKP & LOCALVERSION CONFIGS ==="
-            grep -E "CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX|LOCALVERSION)[= ]" ${OUT_DIR}/.config || true
+            echo "=== VERIFYING KSU & STOCK UH/RKP CONFIGS ==="
+            grep -E "CONFIG_(KSU|UH|RKP|LOCALVERSION)[= ]" ${OUT_DIR}/.config || true
           }
-          EOF
-
-          python3 - << 'EOF'
-          import os, re
-          bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
-          if os.path.exists(bsh):
-              os.chmod(bsh, 0o755)
-              with open(bsh, "r") as f:
-                  txt = f.read()
-              txt = re.sub(r'Building external modules[^\n"]*', 'Skipping external modules"\nEXT_MODULES=""\nEXT_MODULES_MAKEFILE=""\necho "External modules skipped', txt)
-              with open(bsh, "w") as f:
-                  f.write(txt)
           EOF
 
           export ARCH=arm64
@@ -356,14 +346,16 @@ jobs:
           set -e
           if [ "$BUILD_RC" -ne 0 ]; then
             if find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image*" | grep -q .; then
-              echo "Kernel image compiled successfully; proceeding to repack boot.img."
+              echo "Kernel image compiled; checking built modules."
             else
               grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
               exit 1
             fi
           fi
+          echo "=== BUILT KO MODULES ==="
+          find "$KERNEL_ROOT/out" -name "*.ko"
 
-      - name: Repack boot.img (Header v4 + GZIP) and Create Boot-Only Odin Tar
+      - name: Repack boot.img & Update vendor_boot.img Modules
         run: |
           mkdir -p /home/runner/output && cd /home/runner/output
           cp $HOME/work/boot.img .
@@ -373,28 +365,44 @@ jobs:
           if [ -z "$KERNEL_IMG" ]; then
             KERNEL_IMG=$(find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image.gz" | head -n 1)
           fi
-          ls -lh "$KERNEL_IMG"
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
 
-          python3 - << 'EOF'
-          with open("boot.img", "rb") as f:
-              hdr = f.read(64)
-              f.seek(4096)
-              kbytes = f.read(16)
-          print("Header Magic:", hdr[:8])
-          print("Header Version:", int.from_bytes(hdr[40:44], "little"))
-          print("Kernel first 8 bytes (expect 1f 8b 08 for gzip):", kbytes[:8].hex(" "))
-          assert hdr[:8] == b"ANDROID!", "Invalid boot.img magic!"
-          assert kbytes[:2] == b"\x1f\x8b", "Kernel was not gzip-compressed!"
-          EOF
+          mkdir -p /home/runner/vboot && cd /home/runner/vboot
+          cp $HOME/work/vendor_boot.img .
+          $HOME/tools/magiskboot unpack vendor_boot.img
+          ls -la
 
-          ls -lh boot.img
-          tar --format=ustar -cvf A245F_StockTest_boot.tar boot.img
+          RAMDISK_CPIO=$(ls ramdisk.cpio vendor_ramdisk*.cpio 2>/dev/null | head -n 1)
+          if [ -n "$RAMDISK_CPIO" ]; then
+            echo "Updating modules inside $RAMDISK_CPIO..."
+            mkdir -p tmp_rd && cd tmp_rd
+            cpio -idm < "../$RAMDISK_CPIO" 2>/dev/null || true
+            UPDATED_COUNT=0
+            for existing_ko in $(find . -name "*.ko"); do
+              base_ko=$(basename "$existing_ko")
+              built_ko=$(find "$KERNEL_ROOT/out" -name "$base_ko" | head -n 1)
+              if [ -n "$built_ko" ]; then
+                rel_path="${existing_ko#./}"
+                echo "Replacing vendor_boot module: $rel_path"
+                "$HOME/tools/magiskboot" cpio "../$RAMDISK_CPIO" "add 0644 $rel_path $built_ko"
+                UPDATED_COUNT=$((UPDATED_COUNT + 1))
+              fi
+            done
+            echo "Total modules updated in vendor_boot: $UPDATED_COUNT"
+            cd .. && rm -rf tmp_rd
+          fi
 
-      - name: Upload Boot-Only Odin Package
+          $HOME/tools/magiskboot repack vendor_boot.img new-vendor_boot.img
+          mv new-vendor_boot.img /home/runner/output/vendor_boot.img
+
+          cd /home/runner/output
+          ls -lh boot.img vendor_boot.img
+          tar --format=ustar -cvf A245F_KSU_boot_vendor_boot.tar boot.img vendor_boot.img
+
+      - name: Upload Ready Odin Package
         uses: actions/upload-artifact@v4
         with:
-          name: A245F-StockTest-Odin
-          path: /home/runner/output/A245F_StockTest_boot.tar
+          name: A245F-KSU-Boot-VendorBoot
+          path: /home/runner/output/A245F_KSU_boot_vendor_boot.tar
