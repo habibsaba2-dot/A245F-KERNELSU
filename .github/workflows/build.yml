@@ -248,7 +248,7 @@ jobs:
                       f.write(txt)
           EOF
 
-      - name: Link Hermetic Build Tools and Compile Kernel + External Modules
+      - name: Link Hermetic Build Tools and Compile Kernel + In-Tree Modules
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
@@ -346,16 +346,19 @@ jobs:
           set -e
           if [ "$BUILD_RC" -ne 0 ]; then
             if find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image*" | grep -q .; then
-              echo "Kernel image compiled; checking built modules."
+              echo "Kernel image compiled; ensuring all in-tree .ko modules are built."
             else
               grep -iE "error:|Error [0-9]|not found|fatal:" /tmp/build.log | tail -n 30
               exit 1
             fi
           fi
+
+          # Explicitly build all in-tree modules (including blocktag.ko) if build.sh stopped at external modules
+          make -C "$KERNEL_ROOT/kernel-5.10" O="$OUT_FULL" ARCH=arm64 CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" LLVM=1 LLVM_IAS=1 -j$(nproc) modules || true
           echo "=== BUILT KO MODULES ==="
           find "$KERNEL_ROOT/out" -name "*.ko"
 
-      - name: Repack boot.img & Update vendor_boot.img Modules
+      - name: Repack boot.img & Update All vendor_boot.img CPIO Modules
         run: |
           mkdir -p /home/runner/output && cd /home/runner/output
           cp $HOME/work/boot.img .
@@ -372,26 +375,47 @@ jobs:
           mkdir -p /home/runner/vboot && cd /home/runner/vboot
           cp $HOME/work/vendor_boot.img .
           $HOME/tools/magiskboot unpack vendor_boot.img
+          echo "=== UNPACKED VENDOR_BOOT FILES ==="
           ls -la
 
-          RAMDISK_CPIO=$(ls ramdisk.cpio vendor_ramdisk*.cpio 2>/dev/null | head -n 1)
-          if [ -n "$RAMDISK_CPIO" ]; then
-            echo "Updating modules inside $RAMDISK_CPIO..."
-            mkdir -p tmp_rd && cd tmp_rd
-            cpio -idm < "../$RAMDISK_CPIO" 2>/dev/null || true
-            UPDATED_COUNT=0
-            for existing_ko in $(find . -name "*.ko"); do
-              base_ko=$(basename "$existing_ko")
-              built_ko=$(find "$KERNEL_ROOT/out" -name "$base_ko" | head -n 1)
+          UPDATED_COUNT=0
+          BLOCKTAG_UPDATED=0
+          for cpio_file in *.cpio; do
+            [ -f "$cpio_file" ] || continue
+            echo "Inspecting CPIO archive: $cpio_file"
+            rm -rf tmp_rd && mkdir -p tmp_rd && cd tmp_rd
+            cpio -idm < "../$cpio_file" 2>/dev/null || true
+            for existing_ko in $(find . -name "*.ko" -o -name "*.ko.gz" -o -name "*.ko.lz4"); do
+              rel_path="${existing_ko#./}"
+              base_name=$(basename "$existing_ko")
+              raw_ko_name="${base_name%.gz}"
+              raw_ko_name="${raw_ko_name%.lz4}"
+              built_ko=$(find "$KERNEL_ROOT/out" -name "$raw_ko_name" | head -n 1)
               if [ -n "$built_ko" ]; then
-                rel_path="${existing_ko#./}"
-                echo "Replacing vendor_boot module: $rel_path"
-                "$HOME/tools/magiskboot" cpio "../$RAMDISK_CPIO" "add 0644 $rel_path $built_ko"
+                echo "Replacing vendor_boot module in $cpio_file: $rel_path"
+                prep_ko="/tmp/$base_name"
+                if [[ "$base_name" == *.gz ]]; then
+                  gzip -c "$built_ko" > "$prep_ko"
+                elif [[ "$base_name" == *.lz4 ]]; then
+                  lz4 -c "$built_ko" > "$prep_ko"
+                else
+                  cp "$built_ko" "$prep_ko"
+                fi
+                "$HOME/tools/magiskboot" cpio "../$cpio_file" "add 0644 $rel_path $prep_ko"
+                rm -f "$prep_ko"
                 UPDATED_COUNT=$((UPDATED_COUNT + 1))
+                if [ "$raw_ko_name" = "blocktag.ko" ]; then
+                  BLOCKTAG_UPDATED=1
+                fi
               fi
             done
-            echo "Total modules updated in vendor_boot: $UPDATED_COUNT"
-            cd .. && rm -rf tmp_rd
+            cd /home/runner/vboot && rm -rf tmp_rd
+          done
+
+          echo "Total modules updated in vendor_boot: $UPDATED_COUNT"
+          if [ "$UPDATED_COUNT" -eq 0 ] || [ "$BLOCKTAG_UPDATED" -eq 0 ]; then
+            echo "ERROR: blocktag.ko was not updated inside vendor_boot.img! Check CPIO/built modules above."
+            exit 1
           fi
 
           $HOME/tools/magiskboot repack vendor_boot.img new-vendor_boot.img
