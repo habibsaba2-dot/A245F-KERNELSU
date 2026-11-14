@@ -1,4 +1,4 @@
-name: Build A245F KernelSU SusFS
+name: Build A245F Stock-Config Reference Test
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
           sudo mkswap "$SWAP_PATH"
           sudo swapon "$SWAP_PATH"
           free -h
-          
+
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex git libssl-dev libelf-dev python2 python3 zip unzip cpio lz4 wget gcc-10 g++-10 libc6-dev m4 device-tree-compiler gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi dwarves rsync kmod pkg-config
           sudo ln -sf /usr/bin/python2 /usr/bin/python
@@ -34,7 +34,7 @@ jobs:
           cd $HOME/toolchain/clang-r416183b
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
           tar -xzf clang-r416183b.tar.gz && rm clang-r416183b.tar.gz
-          
+
           cat << 'EOF' > $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg
           -B/usr/lib/x86_64-linux-gnu
           -B/usr/lib/gcc/x86_64-linux-gnu/10
@@ -44,7 +44,7 @@ jobs:
           -isystem /usr/include/x86_64-linux-gnu
           EOF
           cp $HOME/toolchain/clang-r416183b/bin/x86_64-unknown-linux-gnu.cfg $HOME/toolchain/clang-r416183b/bin/x86_64-linux-gnu.cfg
-          
+
           mkdir -p $HOME/tools && cd $HOME/tools
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk -O magisk.zip
           unzip -p magisk.zip lib/x86_64/libmagiskboot.so > magiskboot
@@ -63,7 +63,7 @@ jobs:
           tar -xf Kernel.tar.tar
           tar -xzf Kernel.tar.gz
           lz4 -d boot.img.lz4 boot.img
-          
+
           mkdir -p $HOME/work/stock_unpack && cd $HOME/work/stock_unpack
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
@@ -72,11 +72,11 @@ jobs:
           echo "Stock Kernel Full Version: $STOCK_VER"
           echo "Extracted Stock LOCALVERSION: $STOCK_LOCALVER"
           echo "STOCK_LOCALVER=$STOCK_LOCALVER" >> $GITHUB_ENV
-          
+
           KERNEL_ROOT=$(dirname $(find $HOME/work -maxdepth 3 -name "build_kernel.sh" | head -n 1))
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
-      - name: Patch Module Version Checks & Neutralize UH/RKP Force-Selects
+      - name: Patch Module Version Checks Only (Preserve Stock UH/RKP)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           cd "$KERNEL_ROOT/kernel-5.10"
@@ -132,22 +132,7 @@ jobs:
 
           with open(mod_file, "w") as f:
               f.write(content)
-          print("Successfully patched same_magic and check_version.")
-
-          # Prevent Kconfig from force-selecting UH, RKP, KDP, PROCA, FIVE, DEFEX
-          blocked_syms = r'(?:UH|RKP|RKP_KDP|KDP|KDP_CRED|KDP_NS|KDP_DMAP|PROCA|PROCA_GKI_10|PROCA_GKI_20|FIVE|SECURITY_DEFEX)'
-          for root, _, files in os.walk("."):
-              for fn in files:
-                  if fn.startswith("Kconfig"):
-                      kp = os.path.join(root, fn)
-                      with open(kp, "r", errors="ignore") as f:
-                          ktxt = f.read()
-                      new_ktxt, cnt = re.subn(rf'(?m)^(\s*select\s+{blocked_syms}\b.*)$', r'# \1', ktxt)
-                      if cnt > 0:
-                          os.chmod(kp, 0o644)
-                          with open(kp, "w") as f:
-                              f.write(new_ktxt)
-                          print(f"Neutralized {cnt} force-selects in {kp}")
+          print("Successfully patched same_magic and check_version while keeping UH/RKP intact.")
           EOF
 
       - name: Integrate KernelSU-Next (Manual Hooks)
@@ -157,7 +142,7 @@ jobs:
           cd "$KERNEL_ROOT/kernel-5.10"
           touch .scmversion
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
+
           python3 - << 'EOF'
           import os, re, glob
 
@@ -263,7 +248,7 @@ jobs:
                       f.write(txt)
           EOF
 
-      - name: Link Hermetic Build Tools and Compile Kernel (UH/RKP Disabled)
+      - name: Link Hermetic Build Tools and Compile Reference Kernel (Stock Config)
         run: |
           chmod -R u+w "$KERNEL_ROOT"
           mkdir -p "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86"
@@ -275,7 +260,7 @@ jobs:
             ln -sf "$bin" "$KERNEL_ROOT/kernel/prebuilts/build-tools/linux-x86/bin/$base" || true
             ln -sf "$bin" "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/$base" || true
           done
-          
+
           rm -f "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/clang"* \
                 "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/llvm"* \
                 "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/ld.lld"* \
@@ -286,78 +271,60 @@ jobs:
                 "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/clang"* \
                 "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/llvm"* \
                 "$KERNEL_ROOT/prebuilts/build-tools/linux-x86/bin/ld.lld"*
-          
+
           for tool in "$HOME/toolchain/clang-r416183b/bin/"*; do
             tbase=$(basename "$tool")
             ln -sfn "$tool" "$KERNEL_ROOT/kernel/build/build-tools/path/linux-x86/$tbase"
           done
-          
+
           mkdir -p "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86"
           ln -sfn "$HOME/toolchain/clang-r416183b" "$KERNEL_ROOT/kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b"
-          
+
           mkdir -p "$KERNEL_ROOT/kernel/build/kernel/build-tools" "$KERNEL_ROOT/kernel/build/build-tools"
           ln -sfn / "$KERNEL_ROOT/kernel/build/kernel/build-tools/sysroot"
           ln -sfn / "$KERNEL_ROOT/kernel/build/build-tools/sysroot"
           find "$KERNEL_ROOT/kernel/build" -type f -exec sed -i 's|--sysroot=[^ "]*|--sysroot=/|g' {} +
-          
+
           export PATH="$HOME/toolchain/clang-r416183b/bin:$PATH"
           export CPATH="/usr/include:/usr/include/x86_64-linux-gnu"
           export BISON_PKGDATADIR="/usr/share/bison"
           export M4="/usr/bin/m4"
-          
+
           cd "$KERNEL_ROOT/kernel-5.10"
           OUT_FULL="$KERNEL_ROOT/out/target/product/a24/obj/KERNEL_OBJ"
           mkdir -p "$OUT_FULL"
-          
+
           python scripts/gen_build_config.py \
             --kernel-defconfig a24_00_defconfig \
             --kernel-defconfig-overlays "entry_level.config" \
             -m user \
             -o "$OUT_FULL/build.config"
-          
+
           cat << 'EOF' >> "$OUT_FULL/build.config"
-          
+
           if [ -n "$POST_DEFCONFIG_CMDS" ]; then
             POST_DEFCONFIG_CMDS="$POST_DEFCONFIG_CMDS && update_ksu_susfs_config"
           else
             POST_DEFCONFIG_CMDS="update_ksu_susfs_config"
           fi
-          
+
           function update_ksu_susfs_config() {
             cp "$GITHUB_WORKSPACE/a24_stock_config.txt" ${OUT_DIR}/.config
             ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-              -e CFI_PERMISSIVE \
               -d TRIM_UNUSED_KSYMS \
               -d UBSAN_TRAP \
               -d WERROR \
               -d LOCALVERSION_AUTO \
-              -d UH \
-              -d RKP \
-              -d RKP_KDP \
-              -d KDP \
-              -d KDP_CRED \
-              -d KDP_NS \
-              -d KDP_DMAP \
-              -d PROCA \
-              -d PROCA_GKI_10 \
-              -d PROCA_GKI_20 \
-              -d FIVE \
-              -d SECURITY_DEFEX \
-              -d SAMSUNG_PRODUCT_SHIP \
               -d KSU
             if [ -n "$STOCK_LOCALVER" ]; then
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "$STOCK_LOCALVER"
             fi
             (cd ${OUT_DIR} && make ${TOOL_ARGS} O=${OUT_DIR} olddefconfig)
-            echo "=== VERIFYING SECURITY CONFIGS ARE DISABLED ==="
-            grep -E "CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX)[= ]" ${OUT_DIR}/.config || true
-            if grep -qE "^CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX)=y" ${OUT_DIR}/.config; then
-              echo "ERROR: One or more Samsung hypervisor/security flags stayed enabled!"
-              exit 1
-            fi
+            echo "=== VERIFYING STOCK UH/RKP & LOCALVERSION CONFIGS ==="
+            grep -E "CONFIG_(UH|RKP|KDP|PROCA|FIVE|SECURITY_DEFEX|LOCALVERSION)[= ]" ${OUT_DIR}/.config || true
           }
           EOF
-          
+
           python3 - << 'EOF'
           import os, re
           bsh = os.environ["KERNEL_ROOT"] + "/kernel/build/build.sh"
@@ -369,7 +336,7 @@ jobs:
               with open(bsh, "w") as f:
                   f.write(txt)
           EOF
-          
+
           export ARCH=arm64
           export PLATFORM_VERSION=13
           export CROSS_COMPILE="aarch64-linux-gnu-"
@@ -381,7 +348,7 @@ jobs:
           export KCFLAGS="-Wno-error"
           export SKIP_ABI_CHECKS=1
           export SKIP_DEFCONFIG_CHECK=1
-          
+
           cd ../kernel
           set +e
           ./build/build.sh 2>&1 | tee /tmp/build.log
@@ -396,12 +363,12 @@ jobs:
             fi
           fi
 
-      - name: Repack boot.img, Generate Disabled vbmeta.img, and Create Odin Tar
+      - name: Repack boot.img (Header v4 + GZIP) and Create Boot-Only Odin Tar
         run: |
           mkdir -p /home/runner/output && cd /home/runner/output
           cp $HOME/work/boot.img .
           $HOME/tools/magiskboot unpack boot.img
-          
+
           KERNEL_IMG=$(find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image" | head -n 1)
           if [ -z "$KERNEL_IMG" ]; then
             KERNEL_IMG=$(find "$KERNEL_ROOT/out" -path "*/arch/arm64/boot/Image.gz" | head -n 1)
@@ -410,26 +377,24 @@ jobs:
           cp "$KERNEL_IMG" kernel
           $HOME/tools/magiskboot repack boot.img new-boot.img
           mv new-boot.img boot.img
-          
-          python3 - << 'EOF'
-          import struct
-          # Standard 4096-byte AVB 2.0 disabled vbmeta.img (flags = 3: hashtree + verification disabled)
-          vbmeta = bytearray(4096)
-          vbmeta[0:4] = b'AVB0'
-          struct.pack_into('>I', vbmeta, 4, 1)      # required_libavb_version_major = 1
-          struct.pack_into('>I', vbmeta, 8, 0)      # required_libavb_version_minor = 0
-          struct.pack_into('>I', vbmeta, 120, 3)    # flags = 3 (AVB_VBMETA_IMAGE_FLAGS_VERIFICATION_DISABLED | HASHTREE_DISABLED)
-          vbmeta[128:128+14] = b'avbtool 1.2.0\x00'
-          with open('vbmeta.img', 'wb') as f:
-              f.write(vbmeta)
-          print("Generated 4096-byte disabled vbmeta.img (flags=3).")
-          EOF
-          
-          ls -lh boot.img vbmeta.img
-          tar --format=ustar -cvf A245F_KSU_SusFS_boot_vbmeta.tar boot.img vbmeta.img
 
-      - name: Upload Ready Odin Package
+          python3 - << 'EOF'
+          with open("boot.img", "rb") as f:
+              hdr = f.read(64)
+              f.seek(4096)
+              kbytes = f.read(16)
+          print("Header Magic:", hdr[:8])
+          print("Header Version:", int.from_bytes(hdr[40:44], "little"))
+          print("Kernel first 8 bytes (expect 1f 8b 08 for gzip):", kbytes[:8].hex(" "))
+          assert hdr[:8] == b"ANDROID!", "Invalid boot.img magic!"
+          assert kbytes[:2] == b"\x1f\x8b", "Kernel was not gzip-compressed!"
+          EOF
+
+          ls -lh boot.img
+          tar --format=ustar -cvf A245F_StockTest_boot.tar boot.img
+
+      - name: Upload Boot-Only Odin Package
         uses: actions/upload-artifact@v4
         with:
-          name: A245F-KSU-SusFS-Odin
-          path: /home/runner/output/A245F_KSU_SusFS_boot_vbmeta.tar
+          name: A245F-StockTest-Odin
+          path: /home/runner/output/A245F_StockTest_boot.tar
